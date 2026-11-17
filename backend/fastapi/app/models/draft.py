@@ -20,6 +20,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
     func,
     text,
 )
@@ -30,6 +31,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.stream import Stream
+    from app.models.draft_offer import DraftOffer
 
 
 DRAFT_SYNCED = "SYNCED"
@@ -59,7 +61,7 @@ TERMINAL_DRAFT_STATUSES = frozenset({DRAFT_PUBLISHED, DRAFT_CANCELLED})
 
 
 class StreamDraft(Base):
-    """Draft metadata; draft offer rows will be added in a separate migration."""
+    """Draft metadata and its isolated, unpublished offer positions."""
 
     __tablename__ = "kt_stream_drafts"
     __table_args__ = (
@@ -75,6 +77,9 @@ class StreamDraft(Base):
             ["kt_stream_snapshots.id", "kt_stream_snapshots.stream_id"],
             ondelete="RESTRICT",
             name="fk_kt_stream_drafts_latest_snapshot_stream",
+        ),
+        UniqueConstraint(
+            "id", "stream_id", name="uq_kt_stream_drafts_id_stream"
         ),
         CheckConstraint(
             "status IN ('SYNCED', 'DIRTY', 'CONFLICT', 'PUBLISHING', "
@@ -142,3 +147,6 @@ class StreamDraft(Base):
     )
 
     stream: Mapped[Stream] = relationship(back_populates="drafts")
+    offers: Mapped[list[DraftOffer]] = relationship(
+        back_populates="draft", passive_deletes=True
+    )
