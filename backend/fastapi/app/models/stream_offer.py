@@ -23,6 +23,7 @@ from sqlalchemy import (
     Numeric,
     String,
     text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -42,6 +43,10 @@ class StreamOffer(Base):
 
     __tablename__ = "kt_stream_offers"
     __table_args__ = (
+        UniqueConstraint(
+            "id", "stream_id", "keitaro_offer_id",
+            name="uq_kt_stream_offers_id_stream_offer",
+        ),
         CheckConstraint(
             "keitaro_offer_id > 0",
             name="ck_kt_stream_offers_offer_id_positive",
