@@ -38,3 +38,6 @@ celerybeat.pid
 *.rdb
 *.aof
 __pypackages__/
+
+# Local PostgreSQL backups - never commit
+/var/backups/
