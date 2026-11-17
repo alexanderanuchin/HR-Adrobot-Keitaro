@@ -1,7 +1,11 @@
-"""Alembic is restricted to SQLAlchemy's kt_* schema objects."""
+"""Alembic owns only SQLAlchemy kt_* tables, never Django ORM tables."""
+
 from logging.config import fileConfig
+
 from alembic import context
 from sqlalchemy import create_engine, pool
+
+from app import models  # noqa: F401 - registers model tables in Base.metadata
 from app.core.config import get_settings
 from app.db.base import Base
 
@@ -11,10 +15,12 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+
 def include_name(name, type_, parent_names):
     if type_ == "table":
         return bool(name and name.startswith("kt_"))
     return True
+
 
 def run_migrations_offline():
     context.configure(
@@ -27,15 +33,21 @@ def run_migrations_offline():
     with context.begin_transaction():
         context.run_migrations()
 
+
 def run_migrations_online():
     engine = create_engine(get_settings().database_url, poolclass=pool.NullPool)
     try:
         with engine.connect() as connection:
-            context.configure(connection=connection, target_metadata=target_metadata, include_name=include_name)
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                include_name=include_name,
+            )
             with context.begin_transaction():
                 context.run_migrations()
     finally:
         engine.dispose()
+
 
 if context.is_offline_mode():
     run_migrations_offline()

@@ -60,6 +60,9 @@ jobs:
       - name: Apply Alembic baseline
         working-directory: backend/fastapi
         run: alembic upgrade head
+      - name: Check Alembic migration drift
+        working-directory: backend/fastapi
+        run: alembic check
       - name: FastAPI tests
         working-directory: backend/fastapi
         run: python -m pytest -q

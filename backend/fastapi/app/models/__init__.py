@@ -1,1 +1,6 @@
-"""Future kt_* SQLAlchemy models (A-04); no speculative migrations yet."""
+"""SQLAlchemy A-04 models, registered for Alembic autogenerate."""
+
+from app.models.campaign import Campaign
+from app.models.stream import Stream
+
+__all__ = ["Campaign", "Stream"]
