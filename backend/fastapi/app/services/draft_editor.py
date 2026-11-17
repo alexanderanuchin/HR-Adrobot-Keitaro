@@ -99,17 +99,26 @@ def _draft_positions(session: Session, draft_id: UUID) -> list[DraftOffer]:
 
 
 def _calculate(
-    rows: list[DraftOffer], *, removed_id: UUID | None = None
+    rows: list[DraftOffer], *,
+    removed_id: UUID | None = None,
+    restored_id: UUID | None = None,
+    pin_override: tuple[UUID, int | None] | None = None,
 ) -> dict[UUID, int]:
-    """Validate the proposed complete draft without mutating persisted rows."""
+    """Validate a hypothetical edit before changing any persistent position."""
     proposal = [
         WeightPosition(
             position_id=row.id,
             position_index=row.position_index,
             status=(
-                DRAFT_OFFER_REMOVED if row.id == removed_id else row.status
+                DRAFT_OFFER_REMOVED if row.id == removed_id
+                else DRAFT_OFFER_ACTIVE if row.id == restored_id
+                else row.status
             ),
-            pinned_percent=row.pinned_percent,
+            pinned_percent=(
+                pin_override[1]
+                if pin_override is not None and row.id == pin_override[0]
+                else row.pinned_percent
+            ),
         )
         for row in rows
     ]
@@ -129,6 +138,8 @@ def _save_edit(
     calculated: dict[UUID, int],
     added: DraftOffer | None = None,
     removed_id: UUID | None = None,
+    restored_id: UUID | None = None,
+    pin_override: tuple[UUID, int | None] | None = None,
 ) -> DraftWorkspaceView:
     # Database compare-and-swap is a second line of defence in addition to
     # SELECT FOR UPDATE; no stale caller can silently overwrite newer edits.
@@ -152,6 +163,10 @@ def _save_edit(
     for row in rows:
         if row.id == removed_id:
             row.status = DRAFT_OFFER_REMOVED
+        elif row.id == restored_id:
+            row.status = DRAFT_OFFER_ACTIVE
+        if pin_override is not None and row.id == pin_override[0]:
+            row.pinned_percent = pin_override[1]
         row.calculated_percent = calculated[row.id]
     session.flush()
     session.refresh(draft)  # Read the DB value after compare-and-swap, not a stale ORM cache.
@@ -239,4 +254,84 @@ def remove_offer_from_draft(
         rows=rows,
         calculated=calculated,
         removed_id=position_id,
+    )
+
+
+def bring_back_offer_in_draft(
+    session: Session,
+    *,
+    draft_id: UUID,
+    expected_revision: int,
+    position_id: UUID,
+) -> DraftWorkspaceView:
+    """Restore an archived local position, preserving its UUID, source and PIN.
+
+    Only the draft changes. A saved PIN is reactivated and checked against the
+    full draft allocation; an impossible restore fails *before* any write.
+    """
+    _validate_request(draft_id, expected_revision)
+    if not isinstance(position_id, UUID):
+        raise DraftEditError("position_id must be a UUID")
+
+    draft = _locked_draft(session, draft_id, expected_revision)
+    rows = _draft_positions(session, draft.id)
+    row = next((item for item in rows if item.id == position_id), None)
+    if row is None:
+        raise DraftEditNotFound("offer position not found in this draft")
+    if row.status == DRAFT_OFFER_ACTIVE:
+        raise DraftEditError("offer position is already active")
+    if row.status != DRAFT_OFFER_REMOVED:
+        raise DraftEditBlocked("offer position is not removed")
+
+    calculated = _calculate(rows, restored_id=position_id)
+    return _save_edit(
+        session,
+        draft=draft,
+        expected_revision=expected_revision,
+        rows=rows,
+        calculated=calculated,
+        restored_id=position_id,
+    )
+
+
+def pin_offer_in_draft(
+    session: Session,
+    *,
+    draft_id: UUID,
+    expected_revision: int,
+    position_id: UUID,
+    pinned_percent: int | None,
+) -> DraftWorkspaceView:
+    """PIN to an integer 0..100, or UNPIN with None, on an ACTIVE position.
+
+    Refuse no-op writes so a repeated request does not advance the revision.
+    Weight recalculation and revision update occur in the caller's transaction.
+    """
+    _validate_request(draft_id, expected_revision)
+    if not isinstance(position_id, UUID):
+        raise DraftEditError("position_id must be a UUID")
+    if pinned_percent is not None and (
+        type(pinned_percent) is not int or not 0 <= pinned_percent <= 100
+    ):
+        raise DraftEditError("pinned_percent must be an integer from 0 to 100 or None")
+
+    draft = _locked_draft(session, draft_id, expected_revision)
+    rows = _draft_positions(session, draft.id)
+    row = next((item for item in rows if item.id == position_id), None)
+    if row is None:
+        raise DraftEditNotFound("offer position not found in this draft")
+    if row.status != DRAFT_OFFER_ACTIVE:
+        raise DraftEditBlocked("only active offer positions can be pinned")
+    if row.pinned_percent == pinned_percent:
+        raise DraftEditError("offer position already has the requested PIN")
+
+    override = (position_id, pinned_percent)
+    calculated = _calculate(rows, pin_override=override)
+    return _save_edit(
+        session,
+        draft=draft,
+        expected_revision=expected_revision,
+        rows=rows,
+        calculated=calculated,
+        pin_override=override,
     )
