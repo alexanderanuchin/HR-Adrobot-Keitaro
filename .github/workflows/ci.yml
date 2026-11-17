@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend checks & migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: adrobot
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: adrobot
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U adrobot -d adrobot"
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      POSTGRES_DB: adrobot
+      POSTGRES_USER: adrobot
+      POSTGRES_PASSWORD: ci-only-password
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: '5432'
+      DATABASE_URL: postgresql+psycopg://adrobot:ci-only-password@localhost:5432/adrobot
+      DJANGO_SECRET_KEY: ci-only-not-a-deployment-secret
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      DJANGO_DEBUG: 'false'
+      INTERNAL_API_KEY: ci-only-internal-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/django/requirements.txt -r backend/fastapi/requirements.txt
+      - name: Django system check
+        working-directory: backend/django
+        run: python manage.py check
+      - name: Check Django migration drift
+        working-directory: backend/django
+        run: python manage.py makemigrations --check --dry-run
+      - name: Apply Django migrations
+        working-directory: backend/django
+        run: python manage.py migrate --noinput
+      - name: Django tests
+        working-directory: backend/django
+        run: python manage.py test accounts --noinput
+      - name: Apply Alembic baseline
+        working-directory: backend/fastapi
+        run: alembic upgrade head
+      - name: FastAPI tests
+        working-directory: backend/fastapi
+        run: python -m pytest -q
+
+  frontend:
+    name: React / TypeScript
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install frontend packages (lockfile will follow first local npm install)
+        run: npm install --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Production build
+        run: npm run build
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare config without real secrets
+        run: cp .env.example .env
+      - name: Validate Compose
+        run: docker compose config --quiet
+      - name: Build application images
+        run: docker compose --profile automation --profile telegram build django fastapi frontend celery_worker telegram_bot
