@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from app.models.campaign import Campaign
     from app.models.snapshot import StreamSnapshot
     from app.models.stream_offer import StreamOffer
+    from app.models.draft import StreamDraft
 
 
 class Stream(Base):
@@ -61,5 +62,8 @@ class Stream(Base):
         back_populates="stream", passive_deletes=True
     )
     offer_positions: Mapped[list[StreamOffer]] = relationship(
+        back_populates="stream", passive_deletes=True
+    )
+    drafts: Mapped[list[StreamDraft]] = relationship(
         back_populates="stream", passive_deletes=True
     )
