@@ -2,5 +2,6 @@
 
 from app.models.campaign import Campaign
 from app.models.stream import Stream
+from app.models.snapshot import StreamSnapshot
 
-__all__ = ["Campaign", "Stream"]
+__all__ = ["Campaign", "Stream", "StreamSnapshot"]

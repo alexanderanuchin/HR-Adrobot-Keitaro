@@ -22,6 +22,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
+    from app.models.snapshot import StreamSnapshot
 
 
 class Stream(Base):
@@ -55,3 +56,6 @@ class Stream(Base):
     )
 
     campaign: Mapped[Campaign] = relationship(back_populates="streams")
+    snapshots: Mapped[list[StreamSnapshot]] = relationship(
+        back_populates="stream", passive_deletes=True
+    )
