@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID as PythonUUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, event, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, event, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +44,9 @@ def snapshot_fingerprint(payload: dict[str, object]) -> str:
 class StreamSnapshot(Base):
     __tablename__ = "kt_stream_snapshots"
     __table_args__ = (
+        UniqueConstraint(
+            "id", "stream_id", name="uq_kt_stream_snapshots_id_stream"
+        ),
         CheckConstraint(
             "fingerprint ~ '^[0-9a-f]{64}$'",
             name="ck_kt_stream_snapshots_fingerprint_sha256",
