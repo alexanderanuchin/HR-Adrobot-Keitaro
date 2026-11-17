@@ -1,0 +1,109 @@
+name: ${COMPOSE_PROJECT_NAME:-adrobot}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  fastapi:
+    build:
+      context: ./backend/fastapi
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  django:
+    build:
+      context: ./backend/django
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      fastapi: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/v1/health/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_PROXY_TARGET: http://django:8001
+    depends_on:
+      django: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:5173:5173"
+    restart: unless-stopped
+
+  celery_worker:
+    profiles: ["automation"]
+    build:
+      context: ./backend/django
+    command: ["celery", "-A", "config.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  celery_beat:
+    profiles: ["automation"]
+    build:
+      context: ./backend/django
+    command: ["celery", "-A", "config.celery_app", "beat", "--loglevel=INFO", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  telegram_bot:
+    profiles: ["telegram"]
+    build:
+      context: ./backend/bot
+    env_file: .env
+    environment:
+      DJANGO_API_URL: http://django:8001
+    depends_on:
+      django: {condition: service_healthy}
+    restart: "no"
+
+volumes:
+  pg_data:
