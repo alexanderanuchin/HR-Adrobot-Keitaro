@@ -1,0 +1,35 @@
+name: Repository safety
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-safety:
+    name: Check repository files and history
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout full Git history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test repository safety rules
+        run: |
+          python infra/scripts/check_repo_safety.py --self-test
+
+      - name: Check tracked files and history
+        run: |
+          python infra/scripts/check_repo_safety.py
