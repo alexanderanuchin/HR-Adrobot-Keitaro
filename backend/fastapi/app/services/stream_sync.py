@@ -132,26 +132,24 @@ def offer_positions(session: Session, stream_id: UUID) -> list[StreamOffer]:
     ))
 
 
-def _normalized_shares(positions: list[StreamOffer]) -> dict[UUID, int]:
-    active = [row for row in positions if row.local_status == LOCAL_OFFER_ACTIVE]
-    if not active:
-        return {}
-    if len(active) == 1 and active[0].pin_immediately:
-        return {active[0].id: int(active[0].remote_share or 0)}
-    shares = [int(row.remote_share or 0) for row in active]
-    if not any(shares):
-        shares = [1] * len(active)
-    total = sum(shares)
-    bases = [divmod(share * 100, total) for share in shares]
-    remainder = 100 - sum(base for base, _ in bases)
-    priority = sorted(range(len(active)), key=lambda index: -bases[index][1])
-    extra = set(priority[:remainder])
-    return {row.id: bases[index][0] + (index in extra) for index, row in enumerate(active)}
+def _active_shares(positions: list[StreamOffer]) -> dict[UUID, int]:
+    return {row.id: int(row.remote_share or 0) for row in positions if row.local_status == LOCAL_OFFER_ACTIVE}
+
+
+def _clear_conflicting_pins(rows: list[StreamOffer], shares: dict[UUID, int]) -> None:
+    for row in rows:
+        # Archived pins and pins meant for redistribution are still useful later.
+        if (row.pinned_percent is not None and row.id in shares and (len(shares) > 1 or row.pin_immediately)
+                and row.pinned_percent != shares[row.id]):
+            row.pinned_percent = None
+            row.pin_immediately = False
 
 
 def initial_positions(session: Session, stream_id: UUID) -> tuple[InitialOfferPosition, ...]:
     rows = offer_positions(session, stream_id)
-    shares = _normalized_shares(rows)
+    shares = _active_shares(rows)
+    # Older workspaces could retain a pin matching the previously normalized share.
+    _clear_conflicting_pins(rows, shares)
     return tuple(InitialOfferPosition(row.id, index, shares.get(row.id, 0)) for index, row in enumerate(rows))
 
 
@@ -213,13 +211,7 @@ def record_positions(
             row.remote_state = None
     session.flush()
     rows = offer_positions(session, stream.id)
-    shares = _normalized_shares(rows)
-    for row in rows:
-        # Compare only pins that currently apply. Archived and deferred pins stay available.
-        if (row.id in shares and (len(shares) > 1 or row.pin_immediately)
-                and row.pinned_percent != shares[row.id]):
-            row.pinned_percent = None
-            row.pin_immediately = False
+    _clear_conflicting_pins(rows, _active_shares(rows))
 
 
 def capture(

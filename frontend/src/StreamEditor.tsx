@@ -1,6 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import {
-  type Campaign, type Draft, errorText, type Item, type Position, type Stream, workspace,
+  type Campaign, type Draft, errorText, type Item, type Position, type Stream, type StreamRefresh, workspace,
 } from './api'
 import HelpHint, { FieldHelp } from './HelpHint'
 import OfferPicker from './OfferPicker'
@@ -11,6 +11,7 @@ type EditAction = 'remove' | 'delete' | 'bring_back' | 'pin'
 type DraftConfirmation = 'publish' | 'cancel'
 type OfferRemoval = { position: Position; confirmDeletion: boolean }
 const fetchLabel = 'Загрузить потоки из Keitaro'
+const refreshLabel = 'Обновить поток из Keitaro'
 
 function EditorDialog({ title, detail, onClose, children }: {
   title: string
@@ -150,6 +151,16 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
     setCampaigns((previous) => Array.from(new Map([...previous, ...items].map((item) => [item.id, item])).values()))
   }
 
+  function applyRefreshedStream({ stream, draft: view }: StreamRefresh) {
+    setCampaign((current) => current && {
+      ...current, streams: current.streams.map((item) => item.id === stream.id ? stream : item),
+    })
+    setSelected(view ? stream : null)
+    setDraft(view)
+    setOffer(null)
+    if (!view) setError('Поток больше недоступен для редактирования в Keitaro.')
+  }
+
   useEffect(() => {
     const controller = new AbortController()
     workspace<Item[]>('campaigns', undefined, controller.signal)
@@ -187,15 +198,23 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
         setCampaign(result)
         if (streamId === null) return
         const stream = result.streams.find((item) => item.keitaro_id === streamId)
-        if (!stream || (!stream.editable && !stream.draft_status)) {
+        if (!stream) {
           setError('Поток недоступен для редактирования. Выберите другой поток или загрузите список из Keitaro.')
           return
         }
-        setBusy('Открываем черновик…')
-        const view = await workspace<Draft>(`streams/${stream.id}/workspace`, {}, controller.signal)
-        if (!controller.signal.aborted) {
-          setSelected(stream)
-          setDraft(view)
+        setBusy('Сверяем поток с Keitaro…')
+        try {
+          const refreshed = await workspace<StreamRefresh>(`streams/${stream.id}/refresh`, {}, controller.signal)
+          if (!controller.signal.aborted) applyRefreshedStream(refreshed)
+        } catch (requestError) {
+          if (controller.signal.aborted) return
+          if (!stream.editable && !stream.draft_status) throw requestError
+          const view = await workspace<Draft>(`streams/${stream.id}/workspace`, {}, controller.signal)
+          if (!controller.signal.aborted) {
+            setSelected(stream)
+            setDraft(view)
+            setError('Не удалось сверить поток с Keitaro. Показана сохранённая версия.')
+          }
         }
       })
       .catch((requestError: unknown) => {
@@ -269,6 +288,14 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
     })
   }
 
+  async function refreshStream(stream: Stream) {
+    await run('Сверяем поток с Keitaro…', async () => {
+      const refreshed = await workspace<StreamRefresh>(`streams/${stream.id}/refresh`, {})
+      applyRefreshedStream(refreshed)
+      if (refreshed.draft) setNotice('Поток сверён с Keitaro.')
+    })
+  }
+
   async function fetchStreams() {
     if (campaignId === null) return
     await run('Синхронизируем потоки…', async () => {
@@ -339,12 +366,10 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
   const draftNotice = draft?.reason === 'publication_rejected'
     ? `Keitaro отклонил публикацию (HTTP ${draft.upstream_status}). Черновик сохранён.`
     : draft?.status === 'CONFLICT'
-      ? 'Состав офферов изменился в Keitaro. Черновик сохранён. Сверьте поток или отмените локальные изменения, чтобы открыть актуальный список.'
+      ? 'Офферы или их доли изменились в Keitaro. Черновик сохранён. Сверьте поток или отмените локальные изменения, чтобы открыть актуальный список.'
       : draft && ['UNCERTAIN', 'PUBLISHING', 'VERIFYING'].includes(draft.status)
-        ? `Результат публикации требует сверки. Нажмите «${fetchLabel}».`
+        ? `Результат публикации требует сверки. Нажмите «${refreshLabel}».`
         : ''
-  const draftHelp = draft?.publication_error || draftNotice
-    || 'Черновик хранит ваши правки. Кнопка «Опубликовать в Keitaro» применяет их к потоку.'
 
   return (
     <>
@@ -407,7 +432,7 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
                   {stream.editable || stream.draft_status ? (
                     <HelpHint label="Черновик потока" text="Откроет сохранённый черновик выбранного потока или создаст новый из загруженных офферов."
                       control={<button className="button button--subtle" disabled={Boolean(busy)}
-                        onClick={() => stream.keitaro_id === streamId ? openStream(stream) : onStream(stream.keitaro_id)}>
+                        onClick={() => stream.keitaro_id === streamId ? refreshStream(stream) : onStream(stream.keitaro_id)}>
                         {selected?.id === stream.id ? 'Обновить черновик' : 'Открыть офферы'}
                       </button>} />
                   ) : <span className="muted">Только просмотр</span>}
@@ -421,9 +446,11 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
         <section className="panel form-stack draft" aria-label="Черновик офферов">
           <div className="panel-heading">
             <h2>{selected?.name || 'Черновик офферов'}</h2>
-            <HelpHint label="Состояние черновика"
-              text={draftHelp}
-              control={<span className={`status status--${draft.status.toLowerCase()}`}>{streamStatusLabels[draft.status] || draft.status}</span>} />
+            <div className="draft-heading-actions">
+              <span className={`status status--${draft.status.toLowerCase()}`}>{streamStatusLabels[draft.status] || draft.status}</span>
+              {selected && <button type="button" className="stream-refresh" aria-label={refreshLabel}
+                disabled={Boolean(busy)} onClick={() => refreshStream(selected)}>↻</button>}
+            </div>
           </div>
           {draftNotice && <p className="notice notice--warning" role="status">{draftNotice}</p>}
           {draft.publication_error && <p className="notice notice--warning" role="status">{draft.publication_error}</p>}

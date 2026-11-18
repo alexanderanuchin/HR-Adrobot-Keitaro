@@ -22,7 +22,8 @@ from app.services.draft_editor import (
 from app.services.draft_workspace import DraftWorkspaceView
 from app.services.managed_creation import create_or_reconcile
 from app.services.stream_publication import (
-    cancel_draft, duplicate_offer_message, is_editable, publication_assignments, publish_draft, sync_campaign, workspace,
+    cancel_draft, duplicate_offer_message, is_editable, lock_stream, publication_assignments, publish_draft,
+    sync_campaign, sync_stream, unfinished_draft, workspace,
 )
 from app.services.stream_sync import MAX_REMOTE_ID, latest_snapshot
 
@@ -142,6 +143,15 @@ def create(payload: CampaignInput, client: Tracker, engine: Database) -> dict:
     return asdict(create_or_reconcile(engine, client, CampaignCreationRequest(**payload.model_dump())))
 
 
+def _stream_view(row: Stream, snapshot: StreamSnapshot | None, draft_status: str | None) -> dict:
+    payload = snapshot.normalized_payload if snapshot else {}
+    return {
+        "id": row.id, "keitaro_id": row.keitaro_stream_id, "name": row.name,
+        "type": row.stream_type, "schema": row.schema_type, "position": payload.get("position"),
+        "present": payload.get("present") is True, "editable": is_editable(snapshot), "draft_status": draft_status,
+    }
+
+
 @router.get("/campaigns/{campaign_id}")
 def campaign_workspace(campaign_id: RemoteID, engine: Database) -> dict:
     with Session(engine) as session, session.begin():
@@ -154,16 +164,7 @@ def campaign_workspace(campaign_id: RemoteID, engine: Database) -> dict:
             .join(Stream, Stream.id == StreamDraft.stream_id)
             .where(Stream.campaign_id == campaign.id, StreamDraft.status.not_in(TERMINAL_DRAFT_STATUSES))
         ).all())
-        streams = []
-        for row in rows:
-            snapshot = latest_snapshot(session, row.id)
-            payload = snapshot.normalized_payload if snapshot else {}
-            streams.append({
-                "id": row.id, "keitaro_id": row.keitaro_stream_id, "name": row.name,
-                "type": row.stream_type, "schema": row.schema_type, "position": payload.get("position"),
-                "present": payload.get("present") is True, "editable": is_editable(snapshot),
-                "draft_status": draft_statuses.get(row.id),
-            })
+        streams = [_stream_view(row, latest_snapshot(session, row.id), draft_statuses.get(row.id)) for row in rows]
         streams.sort(key=lambda row: (row["position"] is None, row["position"] or 0, row["keitaro_id"]))
         return {"id": campaign_id, "name": campaign.name, "streams": streams}
 
@@ -206,6 +207,17 @@ def stream_history(engine: Database, offset: Annotated[int, Query(ge=0, le=MAX_R
 def open_workspace(stream_id: UUID, actor_id: Actor, engine: Database) -> dict:
     with Session(engine) as session, session.begin():
         return _draft_view(session, workspace(session, stream_id, actor_id))
+
+
+@router.post("/streams/{stream_id}/refresh")
+def refresh_stream(stream_id: UUID, actor_id: Actor, client: Tracker, engine: Database) -> dict:
+    sync_stream(engine, client, stream_id)
+    with Session(engine) as session, session.begin():
+        stream = lock_stream(session, stream_id)
+        snapshot = latest_snapshot(session, stream.id)
+        pending = unfinished_draft(session, stream.id)
+        view = workspace(session, stream_id, actor_id) if is_editable(snapshot) or pending is not None else None
+        return {"stream": _stream_view(stream, snapshot, view.status if view else None), "draft": _draft_view(session, view)}
 
 
 @router.post("/drafts/{draft_id}/offers")

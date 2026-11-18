@@ -1,13 +1,14 @@
 """Exercise the actual workspace HTTP API with PostgreSQL and a fake Keitaro."""
 
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, update
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from app.core.config import get_settings
@@ -15,6 +16,7 @@ from app.db.base import Base
 from app.db.workspace import operation_session
 from app.integrations.keitaro_admin import KeitaroAdminClient
 from app.main import app
+from app.models import DraftOffer
 from app.workspace_api import engine_dependency, keitaro_dependency
 
 PREFIX = "/internal/v1/workspace"
@@ -294,7 +296,7 @@ def test_fetch_edit_publish_archive_and_cancel(api, tracker):
     assert clean["status"] == "SYNCED"
     assert [row["keitaro_offer_id"] for row in clean["positions"]] == [11, 12, 13]
     assert clean["positions"][-1]["status"] == "REMOVED"
-    assert sum(row["calculated_percent"] for row in clean["positions"]) == 100
+    assert [row["calculated_percent"] for row in clean["positions"]] == [70, 15, 0]
     edited = add(api, clean, offer_id=11)
     cancelled = post(api, f"drafts/{edited['draft_id']}/cancel", {"revision": edited["revision"]})["draft"]
     assert cancelled["draft_id"] != edited["draft_id"]
@@ -483,6 +485,49 @@ def test_future_pin_rebalances_duplicate_draft_positions_but_cannot_publish_them
     assert tracker.writes == []
 
 
+def test_refresh_reads_exact_shares_and_archives_removed_keitaro_offers(api, tracker):
+    tracker.flows[52]["offers"] = [{**tracker.flows[52]["offers"][0], "share": 100}]
+    stream_id = fetch(api)["streams"][1]["id"]
+    route = f"streams/{stream_id}/refresh"
+    assert workspace(api, stream_id)["positions"][0]["calculated_percent"] == 100
+
+    tracker.flows[52]["offers"][0]["share"] = 0
+    request_count = len(tracker.requests)
+    refreshed = post(api, route)["draft"]
+    assert refreshed["status"] == "SYNCED"
+    assert [(row["status"], row["calculated_percent"]) for row in refreshed["positions"]] == [("ACTIVE", 0)]
+    assert [(request.method, request.url.path) for request in tracker.requests[request_count:]] == [
+        ("GET", "/admin_api/v1/streams/52"),
+    ]
+    tracker.flows[52]["offers"][0]["state"] = "disabled"
+    disabled = post(api, route)["draft"]
+    assert [(row["status"], row["calculated_percent"]) for row in disabled["positions"]] == [("REMOVED", 0)]
+
+    tracker.flows[52]["offers"] = []
+    archived = post(api, route)["draft"]
+    assert [(row["status"], row["calculated_percent"]) for row in archived["positions"]] == [("REMOVED", 0)]
+    assert archived["positions"][0]["source_position_id"] == disabled["positions"][0]["source_position_id"]
+    assert tracker.writes == []
+    restored = change(api, archived, "bring_back", archived["positions"][0])
+    assert [(row["status"], row["calculated_percent"]) for row in restored["positions"]] == [("ACTIVE", 100)]
+    assert publish(api, restored)["status"] == "PUBLISHED"
+    assert [row["share"] for row in tracker.flows[52]["offers"]] == [100]
+
+
+def test_refresh_replaces_a_clean_draft_from_legacy_normalized_shares(api, tracker, database):
+    tracker.flows[52]["offers"] = [{**tracker.flows[52]["offers"][0], "share": 0}]
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    with Session(database) as session, session.begin():
+        position_id = UUID(draft["positions"][0]["position_id"])
+        session.execute(update(DraftOffer).where(DraftOffer.id == position_id).values(calculated_percent=100))
+    refreshed = post(api, f"streams/{stream_id}/refresh")["draft"]
+    assert refreshed["draft_id"] != draft["draft_id"]
+    assert refreshed["positions"][0]["calculated_percent"] == 0
+    assert post(api, f"streams/{stream_id}/refresh")["draft"] == refreshed
+    assert tracker.writes == []
+
+
 def test_external_offer_conflict_is_blocked_until_cancel(api, tracker):
     stream = fetch(api)["streams"][1]
     draft = add(api, workspace(api, stream["id"]))
@@ -491,9 +536,10 @@ def test_external_offer_conflict_is_blocked_until_cancel(api, tracker):
     assert result["status"] == "CONFLICT"
     assert len(result["positions"]) == 3
     assert result["reason"] == "remote_offers_changed"
+    assert post(api, f"streams/{stream['id']}/refresh")["draft"] == result
     assert tracker.writes == []
     cancelled = post(api, f"drafts/{result['draft_id']}/cancel", {"revision": result["revision"]})["draft"]
-    assert [row["calculated_percent"] for row in cancelled["positions"]] == [100, 0]
+    assert [row["calculated_percent"] for row in cancelled["positions"]] == [60, 0]
     assert cancelled["positions"][1]["status"] == "REMOVED"
 
 
