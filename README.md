@@ -2,10 +2,9 @@
 
 Adrobot — test assignment: Keitaro campaign creator and a draft-based offer editor.
 
-**Stage 1 (scaffold)**: services, health checks, configuration, empty Alembic baseline,
-Django custom user, Celery/Telegram entry points, and React shell. **Keitaro CRUD,
-offer editor, migrations for business models, and monitoring logic are NOT implemented yet.**
-The UI intentionally does not pretend these actions work. This is not a completed assignment.
+The repository includes the service scaffold, SQLAlchemy models and migrations,
+local offer drafts, and a server-side Keitaro Admin API client. Campaign creation
+and stream-offer updates are available through Python calls in the FastAPI backend.
 
 ## Architecture (approved A-01 to A-04)
 
@@ -97,7 +96,18 @@ Run `docker compose down` to stop services; **do not use `down -v`** unless you 
 
 `.env` is ignored and never committed. `.env.example` only contains placeholders. Local demo secrets are generated per ZIP. Never put employer credentials, an API token, Telegram token or database password into Git, screenshots, logs or Actions YAML. Rotate any previously exposed real passwords.
 
-No API writes to Keitaro are implemented in this stage. Mock/CI checks are not live integration tests. Real API behavior will be validated on an authorized sandbox before using live mutations.
+`app.services.campaign_creation.create_campaign` uses `KeitaroAdminClient` to create
+a disabled campaign, verify the two streams, and enable it. On failure, inspect
+the reported stage and campaign ID in Keitaro before retrying. A timeout can occur
+after the tracker applies a write.
+
+`KeitaroAdminClient.replace_stream_offers` sends the desired list of offer IDs,
+shares and states to the flow update endpoint. Draft positions marked as removed
+are omitted when building the list for publication.
+
+The tests use simulated Admin API responses. Live verification should cover the
+campaign's domain binding, GEO redirect and fallback routing, and the behavior of
+partial flow updates when adding or removing offer associations.
 
 ## Planned next small commit
 
