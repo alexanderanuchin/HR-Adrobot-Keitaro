@@ -15,4 +15,4 @@ def test_internal_status_requires_key():
 def test_internal_status_authorized():
     response = client.get("/internal/v1/status", headers={"X-Internal-Key": "test-only-internal-key"})
     assert response.status_code == 200
-    assert response.json()["integration"] == "not-implemented"
+    assert response.json()["integration"] == "keitaro-admin-api"
