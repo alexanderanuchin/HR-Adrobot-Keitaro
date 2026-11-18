@@ -22,9 +22,9 @@ from app.models.draft import (
     DRAFT_PUBLISHING, DRAFT_SYNCED, DRAFT_UNCERTAIN, DRAFT_VERIFYING, TERMINAL_DRAFT_STATUSES,
 )
 from app.models.draft_offer import DRAFT_OFFER_ACTIVE
-from app.services.draft_editor import DraftEditBlocked, DraftRevisionConflict
+from app.services.draft_editor import DraftEditBlocked, DraftEditError, DraftRevisionConflict
 from app.services.draft_workspace import (
-    DraftWorkspaceNotFound, open_or_create_draft_workspace, read_draft_workspace,
+    DraftWorkspaceNotFound, DraftWorkspaceView, open_or_create_draft_workspace, read_draft_workspace,
 )
 from app.services.stream_sync import (
     capture, initial_positions, latest_snapshot, observed_offers, offer_positions,
@@ -105,11 +105,10 @@ def _owned_detail(client: KeitaroAdminClient, stream: Stream, campaign_id: int) 
     return record
 
 
-def _publication_intent(session: Session, draft: StreamDraft, record: KeitaroRecord) -> dict:
-    positions = read_draft_workspace(session, draft.id).positions
-    source = {row.id: row for row in offer_positions(session, draft.stream_id)}
-    intent = []
-    for row in positions:
+def publication_assignments(session: Session, view: DraftWorkspaceView) -> list[dict]:
+    source = {row.id: row for row in offer_positions(session, view.stream_id)}
+    assignments = []
+    for row in view.positions:
         observed = source.get(row.source_position_id)
         if row.status == DRAFT_OFFER_ACTIVE:
             share, state = row.calculated_percent, "active"
@@ -117,9 +116,18 @@ def _publication_intent(session: Session, draft: StreamDraft, record: KeitaroRec
             share, state = int(observed.remote_share), "disabled"
         else:
             continue
-        intent.append({"position": str(row.position_id), "offer_id": row.keitaro_offer_id,
-                       "share": share, "state": state})
-    return {"routing": routing_fingerprint(record), "assignments": intent}
+        assignments.append({"position": str(row.position_id), "offer_id": row.keitaro_offer_id,
+                            "share": share, "state": state})
+    return assignments
+
+
+def duplicate_offer_message(assignments: list[dict]) -> str | None:
+    counts = Counter(item["offer_id"] for item in assignments)
+    duplicates = sorted(offer_id for offer_id, count in counts.items() if count > 1)
+    if not duplicates:
+        return None
+    ids = ", ".join(f"#{offer_id}" for offer_id in duplicates)
+    return f"Офферы с ID {ids} повторяются. Перед публикацией оставьте в потоке одну строку для каждого ID."
 
 
 def _assignment(item: dict) -> StreamOfferAssignment:
@@ -268,7 +276,10 @@ def publish_draft(
                 return read_draft_workspace(session, draft.id)
             if before is None or not is_editable(latest_snapshot(session, stream.id)):
                 raise DraftEditBlocked("The original flow is unavailable")
-            intent = _publication_intent(session, draft, before)
+            assignments = publication_assignments(session, read_draft_workspace(session, draft.id))
+            if message := duplicate_offer_message(assignments):
+                raise DraftEditError(message)
+            intent = {"routing": routing_fingerprint(before), "assignments": assignments}
             if _matches(before, intent):
                 return _confirm(session, stream, draft, before, intent)
             draft.status = DRAFT_PUBLISHING

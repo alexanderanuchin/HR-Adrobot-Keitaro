@@ -257,7 +257,7 @@ export default function StreamEditor({ campaignId, onCampaign }: {
   }
 
   async function publish() {
-    if (!draft) return
+    if (!draft || draft.publication_error) return
     await run('Записываем и проверяем публикацию…', async () => {
       const view = await workspace<Draft>(`drafts/${draft.draft_id}/publish`, { revision: draft.revision })
       setDraft(view)
@@ -287,6 +287,8 @@ export default function StreamEditor({ campaignId, onCampaign }: {
       : draft && ['UNCERTAIN', 'PUBLISHING', 'VERIFYING'].includes(draft.status)
         ? `Результат публикации требует сверки. Нажмите «${fetchLabel}».`
         : ''
+  const draftHelp = draft?.publication_error || draftNotice
+    || 'Черновик хранит ваши правки. Кнопка «Опубликовать в Keitaro» применяет их к потоку.'
 
   return (
     <>
@@ -363,10 +365,11 @@ export default function StreamEditor({ campaignId, onCampaign }: {
           <div className="panel-heading">
             <h2>{selected?.name || 'Черновик офферов'}</h2>
             <HelpHint label="Состояние черновика"
-              text="«Есть изменения» означает, что правки сохранены в черновике. Чтобы применить их, нажмите «Опубликовать в Keitaro»."
+              text={draftHelp}
               control={<span className={`status status--${draft.status.toLowerCase()}`}>{labels[draft.status] || draft.status}</span>} />
           </div>
           {draftNotice && <p className="notice notice--warning" role="status">{draftNotice}</p>}
+          {draft.publication_error && <p className="notice notice--warning" role="status">{draft.publication_error}</p>}
           {draft.positions.length ? (
             <div className="table-wrap">
               <table>
@@ -409,8 +412,8 @@ export default function StreamEditor({ campaignId, onCampaign }: {
           ) : <p className="muted">Офферов в потоке пока нет.</p>}
           {editable && (
             <div className="add-offer">
-              <OfferPicker value={offer} onPick={setOffer} disabled={Boolean(busy)}
-                help="Найдите активный оффер Keitaro по названию или ID. Затем выберите его и нажмите «Добавить оффер»." />
+              <OfferPicker value={offer} onPick={setOffer} disabled={Boolean(busy)} allowBrowsing
+                help="Введите название или ID либо нажмите «Показать все офферы». Выберите нужный оффер и нажмите «Добавить оффер»." />
               <HelpHint label="Добавить оффер" text="Добавит выбранный оффер в черновик и пересчитает доли."
                 control={<button className="button button--subtle" disabled={Boolean(busy) || !offer}
                   onClick={addOffer}>Добавить оффер</button>} />
@@ -424,8 +427,9 @@ export default function StreamEditor({ campaignId, onCampaign }: {
             ) : (
               <>
                 <HelpHint label="Опубликовать в Keitaro"
-                  text="Проверит актуальный поток и после подтверждения запишет состав офферов и их доли в Keitaro."
-                  control={<button className="button button--primary" disabled={Boolean(busy) || draft.status !== 'DIRTY'}
+                  text={draft.publication_error || 'Проверит актуальный поток и после подтверждения запишет состав офферов и их доли в Keitaro.'}
+                  control={<button className="button button--primary"
+                    disabled={Boolean(busy || draft.publication_error) || draft.status !== 'DIRTY'}
                     onClick={() => setConfirmation('publish')}>Опубликовать в Keitaro</button>} />
                 <HelpHint label="Отменить правки" text="Сбросит неопубликованные правки и откроет данные последней сверки с Keitaro."
                   control={<button className="button button--subtle"

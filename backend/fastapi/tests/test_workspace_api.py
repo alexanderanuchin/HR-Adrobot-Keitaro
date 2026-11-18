@@ -203,6 +203,18 @@ def test_workspace_requires_internal_key_and_limits_responses(api, tracker):
     assert api.get(f"{PREFIX}/campaigns/remote").json()["items"] == [{"id": 42, "name": "Demo"}]
 
 
+def test_offer_catalog_pages_active_offers_and_keeps_exact_id_search(api, tracker):
+    tracker.catalog["offers"] = [
+        {"id": number, "name": f"Test offer {number}", "state": "active"} for number in range(100, 152)
+    ] + [{"id": 152, "name": "Disabled offer", "state": "disabled"}]
+
+    first = api.get(f"{PREFIX}/offers").json()
+    second = api.get(f"{PREFIX}/offers", params={"offset": 50}).json()
+    assert len(first) == 50
+    assert [item["id"] for item in first + second] == list(range(100, 152))
+    assert api.get(f"{PREFIX}/offers", params={"q": "151"}).json() == [{"id": 151, "name": "Test offer 151"}]
+
+
 def test_fetch_edit_publish_archive_and_cancel(api, tracker):
     captured = fetch(api)
     redirect, offer_flow = captured["streams"]
@@ -249,6 +261,34 @@ def test_fetch_edit_publish_archive_and_cancel(api, tracker):
     assert cancelled["draft_id"] != edited["draft_id"]
     assert cancelled["status"] == "SYNCED" and len(cancelled["positions"]) == 3
     assert len(tracker.writes) == 1
+
+
+def test_publish_blocks_repeated_offer_ids_until_draft_is_corrected(api, tracker):
+    tracker.flows[52]["offers"] = [{**tracker.flows[52]["offers"][0], "share": 100}]
+    stream = fetch(api)["streams"][1]
+    draft = workspace(api, stream["id"])
+    for _ in range(3):
+        draft = add(api, draft, offer_id=11)
+
+    assert [row["calculated_percent"] for row in draft["positions"]] == [25, 25, 25, 25]
+    assert "#11" in draft["publication_error"]
+    assert publish(api, draft, expected=422)["detail"] == draft["publication_error"]
+    assert tracker.writes == []
+    assert workspace(api, stream["id"]) == draft
+
+    for duplicate in draft["positions"][1:]:
+        draft = change(api, draft, "remove", duplicate)
+    assert draft["publication_error"] is None
+    draft = add(api, draft, offer_id=12)
+    assert [row["calculated_percent"] for row in draft["positions"] if row["status"] == "ACTIVE"] == [50, 50]
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=70)
+
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert len(tracker.writes) == 1
+    assert json.loads(tracker.writes[0].content) == {"offers": [
+        {"offer_id": 11, "share": 70, "state": "active"},
+        {"offer_id": 12, "share": 30, "state": "active"},
+    ]}
 
 
 def test_external_offer_conflict_is_blocked_until_cancel(api, tracker):
