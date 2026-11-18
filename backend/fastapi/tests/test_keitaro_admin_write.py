@@ -144,7 +144,7 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
     geo_fields = {
         "campaign_id": 21, "name": "GEO redirect", "type": "regular", "position": 1,
         "state": "active", "collect_clicks": True, "schema": "redirect", "action_type": "http",
-        "action_payload": "https://www.google.com/",
+        "action_options": {"url": "https://www.google.com/"},
         "filters": [{"name": "country", "mode": "accept", "payload": ["AU"]}],
     }
     offer_fields = {
@@ -152,9 +152,12 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
         "state": "active", "collect_clicks": True, "schema": "landings", "action_type": "http",
         "landings": [], "offers": [{"offer_id": 11, "state": "active", "share": 100}],
     }
-    geo_flow = {**geo_fields, "id": 22, "filters": [
-        {"id": 31, "stream_id": 22, "name": "country", "mode": "accept", "payload": '["AU"]'},
-    ]}
+    geo_flow = {
+        "id": 22, "campaign_id": 21, "name": "GEO redirect", "type": "regular", "position": 1,
+        "state": "active", "collect_clicks": True, "schema": "redirect", "action_type": "http",
+        "action_payload": "https://www.google.com/",
+        "filters": [{"id": 31, "stream_id": 22, "name": "country", "mode": "accept", "payload": '["AU"]'}],
+    }
     offer_flow = {**offer_fields, "id": 23, "offers": [{**offer_fields["offers"][0], "id": 32, "stream_id": 23}]}
 
     def handle(request):

@@ -82,8 +82,7 @@ def create_campaign(client: KeitaroAdminClient, request: CampaignCreationRequest
             "collect_clicks": True,
             "schema": "redirect",
             "action_type": "http",
-            # Returned by the Stream schema and used for the HTTP action's URL.
-            "action_payload": geo.redirect_url,
+            "action_options": {"url": geo.redirect_url},
             "filters": [{"name": "country", "mode": "accept", "payload": [geo.country_code]}],
         })
         stage = "offer stream creation"
