@@ -52,6 +52,7 @@ class Tracker:
                  "schema": "redirect", "position": 1, "state": "active", "filters": {"kept": True}},
             52: {"id": 52, "campaign_id": 42, "name": "Offers", "type": "default",
                  "schema": "landings", "position": 2, "state": "active",
+                 "action_payload": None, "comments": None,
                  "landings": [{"landing_id": 31}], "filters": [{"id": 55, "name": "country"}],
                  "offers": [
                      {"id": 88, "stream_id": 52, "offer_id": 11, "share": 60, "state": "active"},
@@ -70,6 +71,7 @@ class Tracker:
         self.drop_publish = False
         self.read_unavailable = False
         self.reject_publish = False
+        self.change_routing = False
 
     @property
     def writes(self):
@@ -112,16 +114,15 @@ class Tracker:
                 return httpx.Response(406)
             entity = {"id": 71 + payload["position"], **payload}
             if payload["schema"] == "redirect":
-                assert set(payload["action_options"]) == {"url"}
-                assert "action_payload" not in payload
-                entity["action_payload"] = payload["action_options"]["url"]
+                assert payload["action_payload"] == "https://www.google.com/"
+                entity["action_options"] = None
             self.flows[entity["id"]] = entity
             return httpx.Response(200, json=entity)
         if request.method == "POST" and path == "campaigns/43/enable":
             self.campaigns[43]["state"] = "active"
             if self.fail_activation_response:
                 raise httpx.ReadTimeout("mock activation reply lost", request=request)
-            return httpx.Response(200, json=self.campaigns[43])
+            return httpx.Response(200)
         if request.method == "PUT" and path == "streams/52":
             payload = json.loads(request.content)
             assert set(payload) == {"offers"}
@@ -132,6 +133,8 @@ class Tracker:
             self.flows[52]["offers"] = [
                 {**offer, "id": index, "stream_id": 52} for index, offer in enumerate(payload["offers"], 101)
             ]
+            self.flows[52]["action_payload"] = ""
+            self.flows[52]["comments"] = "edited upstream" if self.change_routing else ""
             if self.fail_after_publish:
                 self.read_unavailable = True
                 raise httpx.ReadTimeout("mock publication reply lost", request=request)
@@ -269,6 +272,15 @@ def test_routing_only_edit_rebases_and_publication_preserves_it(api, tracker):
     assert publish(api, draft)["status"] == "PUBLISHED"
     assert len(tracker.writes) == 1
     assert tracker.flows[52]["filters"][-1]["name"] == "language"
+
+
+def test_publish_detects_nonempty_routing_change_after_put(api, tracker):
+    stream = fetch(api)["streams"][1]
+    draft = add(api, workspace(api, stream["id"]))
+    tracker.change_routing = True
+    assert publish(api, draft)["status"] == "UNCERTAIN"
+    assert fetch(api)["streams"][1]["draft_status"] == "CONFLICT"
+    assert len(tracker.writes) == 1
 
 
 def test_publish_timeout_is_reconciled_without_repeating_put(api, tracker, database):
