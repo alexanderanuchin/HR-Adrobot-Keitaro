@@ -57,14 +57,24 @@ def is_editable(snapshot: StreamSnapshot | None) -> bool:
 def workspace(session: Session, stream_id: UUID, actor_id: int):
     stream = lock_stream(session, stream_id)
     draft = unfinished_draft(session, stream.id)
-    if draft is not None:
+    if draft is not None and draft.status != DRAFT_SYNCED:
         return read_draft_workspace(session, draft.id)
     latest = latest_snapshot(session, stream.id)
     if latest is None or not is_editable(latest):
         raise DraftEditBlocked("This flow does not have an editable offer configuration")
+    positions = initial_positions(session, stream.id)
+    if draft is not None:
+        view = read_draft_workspace(session, draft.id)
+        if {row.source_position_id: row.calculated_percent for row in view.positions} == {
+            row.source_position_id: row.calculated_percent for row in positions
+        }:
+            return view
+        draft.status = DRAFT_CANCELLED
+        draft.revision += 1
+        session.flush()
     return open_or_create_draft_workspace(
         session, stream_id=stream.id, base_snapshot_id=latest.id, created_by_id=actor_id,
-        initial_positions=initial_positions(session, stream.id),
+        initial_positions=positions,
     )
 
 
@@ -266,6 +276,18 @@ def sync_campaign(engine: Engine, client: KeitaroAdminClient, campaign_id: int) 
             ):
                 record = _owned_detail(client, stream, campaign_id)
             _reconcile(session, stream, record)
+
+
+def sync_stream(engine: Engine, client: KeitaroAdminClient, stream_id: UUID) -> None:
+    with Session(engine) as reader:
+        campaign_id = reader.scalar(select(Campaign.keitaro_campaign_id).join(
+            Stream, Stream.campaign_id == Campaign.id,
+        ).where(Stream.id == stream_id))
+    if campaign_id is None:
+        raise DraftWorkspaceNotFound("Stream has not been fetched")
+    with operation_session(engine, f"campaign:{campaign_id}") as session, session.begin():
+        stream = lock_stream(session, stream_id)
+        _reconcile(session, stream, _owned_detail(client, stream, campaign_id))
 
 
 def publish_draft(

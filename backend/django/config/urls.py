@@ -4,7 +4,7 @@ from gateway.views import health, integration_health, workspace_logout, workspac
 
 workspace_resources = (
     r"catalog|offers|campaigns(?:/remote|/[0-9]+(?:/fetch)?)?"
-    r"|streams/(?:history|[0-9a-f-]{36}/workspace)|drafts/[0-9a-f-]{36}/(?:offers|edit|publish|cancel)"
+    r"|streams/(?:history|[0-9a-f-]{36}/(?:workspace|refresh))|drafts/[0-9a-f-]{36}/(?:offers|edit|publish|cancel)"
 )
 
 urlpatterns = [

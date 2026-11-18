@@ -117,6 +117,7 @@ def _validate_initial_positions(
     seen: set[UUID] = set()
     indices: set[int] = set()
     active_total = 0
+    matches_captured_shares = True
     active_count = sum(row.local_status == DRAFT_OFFER_ACTIVE for row in source_rows)
     expected_total = 100
     for position in initial_positions:
@@ -140,6 +141,7 @@ def _validate_initial_positions(
                 raise DraftWorkspaceError("removed initial position must display zero")
         else:
             active_total += position.calculated_percent
+            matches_captured_shares &= position.calculated_percent == source.remote_share
             if source.pinned_percent is not None:
                 if active_count == 1 and source.pin_immediately:
                     expected_total = source.pinned_percent
@@ -152,7 +154,7 @@ def _validate_initial_positions(
         raise DraftWorkspaceError("initial positions must include every tracked offer, including archive")
     if indices != set(range(len(initial_positions))):
         raise DraftWorkspaceError("initial indices must be consecutive from zero")
-    if active_count and active_total != expected_total:
+    if active_count and active_total != expected_total and not matches_captured_shares:
         raise DraftWorkspaceError(f"active initial percentages must sum to {expected_total}")
     # For no active positions, all values have already been checked to be zero.
 

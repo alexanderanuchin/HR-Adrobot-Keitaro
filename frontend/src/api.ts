@@ -61,6 +61,8 @@ export type Draft = {
   positions: Position[]
 }
 
+export type StreamRefresh = { stream: Stream; draft: Draft | null }
+
 let csrfToken = ''
 
 export class ApiError extends Error {
