@@ -43,6 +43,7 @@ export type Draft = {
   reason: string | null
   upstream_status: number | null
   reconciliation_checked: boolean
+  publication_error: string | null
   positions: Position[]
 }
 

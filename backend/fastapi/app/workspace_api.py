@@ -14,14 +14,16 @@ from app.core.config import Settings, get_settings
 from app.db.workspace import get_workspace_engine
 from app.integrations.keitaro_admin import KeitaroAdminClient, KeitaroRecord
 from app.models import Campaign, Stream, StreamDraft
-from app.models.draft import TERMINAL_DRAFT_STATUSES
+from app.models.draft import DRAFT_DIRTY, TERMINAL_DRAFT_STATUSES
 from app.services.campaign_preflight import CampaignCreationRequest
 from app.services.draft_editor import (
     add_offer_to_draft, bring_back_offer_in_draft, pin_offer_in_draft, remove_offer_from_draft,
 )
 from app.services.draft_workspace import DraftWorkspaceView
 from app.services.managed_creation import create_or_reconcile
-from app.services.stream_publication import cancel_draft, is_editable, publish_draft, sync_campaign, workspace
+from app.services.stream_publication import (
+    cancel_draft, duplicate_offer_message, is_editable, publication_assignments, publish_draft, sync_campaign, workspace,
+)
 from app.services.stream_sync import MAX_REMOTE_ID, latest_snapshot
 
 router = APIRouter(prefix="/internal/v1/workspace")
@@ -85,6 +87,9 @@ def _draft_view(session: Session, view: DraftWorkspaceView | None) -> dict | Non
     result["reason"] = details.get("reason")
     result["upstream_status"] = details.get("status_code")
     result["reconciliation_checked"] = details.get("checked") is True
+    result["publication_error"] = (
+        duplicate_offer_message(publication_assignments(session, view)) if view.status == DRAFT_DIRTY else None
+    )
     return result
 
 
@@ -101,6 +106,7 @@ def catalog(client: Tracker) -> dict:
 def search_offers(
     client: Tracker, q: Annotated[str, Query(max_length=255)] = "",
     ids: Annotated[str, Query(max_length=2000, pattern=r"^[0-9]+(,[0-9]+)*$")] | None = None,
+    offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
 ) -> list[dict]:
     if ids is not None:
         selected = set(map(int, ids.split(",")))
@@ -109,7 +115,7 @@ def search_offers(
     offers = [record for record in client.list_offers() if record.raw.get("state") == "active"]
     matches = [record for record in offers if query == str(record.id) or query in record.name.casefold()]
     matches.sort(key=lambda record: (str(record.id) != query, record.name.casefold(), record.id))
-    return [_summary(record) for record in matches[:50]]
+    return [_summary(record) for record in matches[offset:offset + 50]]
 
 
 @router.get("/campaigns/remote")
