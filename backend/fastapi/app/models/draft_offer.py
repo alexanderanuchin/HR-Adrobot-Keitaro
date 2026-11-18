@@ -76,6 +76,7 @@ class DraftOffer(Base):
             "status <> 'REMOVED' OR calculated_percent = 0",
             name="ck_kt_draft_offers_removed_zero",
         ),
+        CheckConstraint("NOT is_deleted OR status = 'REMOVED'", name="ck_kt_draft_offers_deleted_status"),
         Index("ix_kt_draft_offers_draft_status", "draft_id", "status"),
     )
 
@@ -99,6 +100,7 @@ class DraftOffer(Base):
     pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pin_immediately: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     pending_pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     calculated_percent: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )

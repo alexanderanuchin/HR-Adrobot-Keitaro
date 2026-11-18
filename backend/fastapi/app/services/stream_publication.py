@@ -111,6 +111,8 @@ def publication_assignments(session: Session, view: DraftWorkspaceView) -> list[
     disabled_offer_ids: set[int] = set()
     assignments = []
     for row in view.positions:
+        if row.is_deleted:
+            continue
         observed = source.get(row.source_position_id)
         if row.status == DRAFT_OFFER_ACTIVE:
             share, state = row.calculated_percent, "active"
@@ -159,6 +161,12 @@ def _confirm(session: Session, stream: Stream, draft: StreamDraft, record: Keita
     by_position = {}
     for index, position in enumerate(positions):
         row = source.get(position.source_position_id)
+        if position.is_deleted:
+            if row is not None:
+                row.local_status = "REMOVED"
+                row.remote_state = None
+                row.is_deleted = True
+            continue
         if row is None:
             row = StreamOffer(
                 stream_id=stream.id, keitaro_offer_id=position.keitaro_offer_id,

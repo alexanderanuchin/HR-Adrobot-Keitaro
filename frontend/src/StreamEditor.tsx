@@ -17,8 +17,9 @@ const labels: Record<string, string> = {
 }
 
 type CampaignPage = { items: Item[]; next_offset: number | null }
-type EditAction = 'remove' | 'bring_back' | 'pin'
+type EditAction = 'remove' | 'delete' | 'bring_back' | 'pin'
 type DraftConfirmation = 'publish' | 'cancel'
+type OfferRemoval = { position: Position; confirmDeletion: boolean }
 const fetchLabel = 'Загрузить потоки из Keitaro'
 
 function EditorDialog({ title, detail, onClose, children }: {
@@ -153,6 +154,7 @@ export default function StreamEditor({ campaignId, onCampaign }: {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [confirmation, setConfirmation] = useState<DraftConfirmation | null>(null)
+  const [offerRemoval, setOfferRemoval] = useState<OfferRemoval | null>(null)
 
   function addCampaigns(items: Item[]) {
     setCampaigns((previous) => Array.from(new Map([...previous, ...items].map((item) => [item.id, item])).values()))
@@ -296,7 +298,9 @@ export default function StreamEditor({ campaignId, onCampaign }: {
     await run('Сохраняем черновик…', async () => {
       setDraft(await workspace<Draft>(`drafts/${draft.draft_id}/edit`, {
         revision: draft.revision, action, position_id: positionId, pinned_percent: percent, pin_immediately: pinImmediately,
+        ...(action === 'delete' ? { confirm_deletion: true } : {}),
       }))
+      if (action === 'delete') setNotice('Строка удалена из черновика. Чтобы сохранить изменения, опубликуйте их.')
     })
   }
 
@@ -430,19 +434,25 @@ export default function StreamEditor({ campaignId, onCampaign }: {
                       <td>
                         <div className="row-actions">
                           {position.status === 'REMOVED' ? (
-                            <HelpHint label="Вернуть из архива"
-                              text="Вернёт оффер в черновик потока и пересчитает доли. Если доля была закреплена, фиксация восстановится."
-                              control={<button className="button button--subtle" disabled={!editable || Boolean(busy)}
-                                onClick={() => edit('bring_back', position.position_id)}>Вернуть из архива</button>} />
+                            <>
+                              <HelpHint label="Вернуть из архива"
+                                text="Вернёт оффер в черновик потока и пересчитает доли. Если доля была закреплена, фиксация восстановится."
+                                control={<button className="button button--subtle" disabled={!editable || Boolean(busy)}
+                                  onClick={() => edit('bring_back', position.position_id)}>Вернуть из архива</button>} />
+                              <HelpHint label="Удалить из архива"
+                                text="Удалит эту строку из архива потока после подтверждения и публикации. Доли активных офферов сохранятся."
+                                control={<button className="button button--danger" disabled={!editable || Boolean(busy)}
+                                  onClick={() => setOfferRemoval({ position, confirmDeletion: true })}>Удалить</button>} />
+                            </>
                           ) : (
                             <>
                               <ShareControl key={`${position.position_id}:${draft.revision}`} position={position}
                                 disabled={!editable || Boolean(busy)}
                                 save={(percent, immediately) => edit('pin', position.position_id, percent, immediately)} />
                               <HelpHint label="Убрать из потока"
-                                text="Перенесёт позицию в архив с долей 0%. Вернуть её можно кнопкой «Вернуть из архива»."
+                                text="Откроет выбор: перенести строку в архив или удалить её из потока и архива."
                                 control={<button className="button button--danger" disabled={!editable || Boolean(busy)}
-                                  onClick={() => edit('remove', position.position_id)}>Убрать из потока</button>} />
+                                  onClick={() => setOfferRemoval({ position, confirmDeletion: false })}>Убрать из потока</button>} />
                             </>
                           )}
                         </div>
@@ -489,6 +499,26 @@ export default function StreamEditor({ campaignId, onCampaign }: {
             )}
           </div>
         </section>
+      )}
+      {draft && offerRemoval && !offerRemoval.confirmDeletion && (
+        <EditorDialog title="Убрать оффер из потока?" onClose={() => setOfferRemoval(null)}
+          detail={`Строку оффера #${offerRemoval.position.keitaro_offer_id} можно сохранить в архиве для возврата или удалить.`}>
+          <button type="button" className="button button--primary" onClick={() => {
+            setOfferRemoval(null)
+            void edit('remove', offerRemoval.position.position_id)
+          }}>В архив</button>
+          <button type="button" className="button button--danger"
+            onClick={() => setOfferRemoval({ ...offerRemoval, confirmDeletion: true })}>Удалить</button>
+        </EditorDialog>
+      )}
+      {draft && offerRemoval?.confirmDeletion && (
+        <EditorDialog title="Удалить строку оффера?" onClose={() => setOfferRemoval(null)}
+          detail={`После публикации строка #${offerRemoval.position.keitaro_offer_id} исчезнет из потока и его архива. Сам оффер останется в каталоге Keitaro. До публикации можно отменить правки.`}>
+          <button type="button" className="button button--danger" onClick={() => {
+            setOfferRemoval(null)
+            void edit('delete', offerRemoval.position.position_id)
+          }}>Подтвердить удаление</button>
+        </EditorDialog>
       )}
       {draft && confirmation && (
         <ConfirmDraftAction action={confirmation} uncertain={draft.status === 'UNCERTAIN'}

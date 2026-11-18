@@ -521,6 +521,69 @@ def test_uncertain_draft_requires_fetch_and_confirmation_to_discard(api, tracker
     assert len(tracker.writes) == 1
 
 
+def test_delete_active_position_requires_confirmation_and_commits_only_on_publish(api, tracker):
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    target = draft["positions"][1]
+    path = f"drafts/{draft['draft_id']}/edit"
+    post(api, path, {"revision": draft["revision"], "action": "delete", "position_id": target["position_id"]},
+         expected=422)
+    assert workspace(api, stream_id) == draft
+
+    draft = change(api, draft, "delete", target, confirm_deletion=True)
+    assert [(row["keitaro_offer_id"], row["calculated_percent"]) for row in draft["positions"]] == [(11, 100)]
+    assert workspace(api, stream_id) == draft
+    post(api, path, {"revision": draft["revision"], "action": "bring_back", "position_id": target["position_id"]},
+         expected=404)
+    assert tracker.writes == []
+    draft = post(api, f"drafts/{draft['draft_id']}/cancel", {"revision": draft["revision"]})["draft"]
+    assert [row["calculated_percent"] for row in draft["positions"]] == [60, 40]
+
+    draft = change(api, draft, "delete", draft["positions"][1], confirm_deletion=True)
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert json.loads(tracker.writes[0].content) == {"offers": [{"offer_id": 11, "share": 100, "state": "active"}]}
+    fetch(api)
+    assert [row["keitaro_offer_id"] for row in workspace(api, stream_id)["positions"]] == [11]
+    assert [row["id"] for row in tracker.catalog["offers"]] == [11, 12, 13]
+
+    tracker.flows[52]["offers"][0]["share"] = 60
+    tracker.flows[52]["offers"].append({"id": 89, "stream_id": 52, "offer_id": 12, "share": 40, "state": "active"})
+    fetch(api)
+    assert [(row["keitaro_offer_id"], row["status"]) for row in workspace(api, stream_id)["positions"]] == [
+        (11, "ACTIVE"), (12, "ACTIVE"),
+    ]
+
+
+@pytest.mark.parametrize("remote_disabled", [False, True], ids=["local-archive", "disabled-association"])
+def test_delete_archived_position_keeps_active_shares_and_pending_pin(api, tracker, remote_disabled):
+    if remote_disabled:
+        tracker.flows[52]["offers"].append({"id": 90, "stream_id": 52, "offer_id": 13, "share": 0, "state": "disabled"})
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    if not remote_disabled:
+        draft = add(api, draft)
+        draft = change(api, draft, "remove", draft["positions"][-1])
+        assert publish(api, draft)["status"] == "PUBLISHED"
+        draft = workspace(api, stream_id)
+
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=25, pin_immediately=False)
+    active = draft["positions"][:2]
+    target = draft["positions"][2]
+    assert target["status"] == "REMOVED" and target["keitaro_offer_id"] == 13
+    previous_writes = len(tracker.writes)
+    draft = change(api, draft, "delete", target, confirm_deletion=True)
+    assert draft["positions"] == active
+    assert len(tracker.writes) == previous_writes
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert len(tracker.writes) == previous_writes + int(remote_disabled)
+    reopened = workspace(api, stream_id)
+    assert [row["keitaro_offer_id"] for row in reopened["positions"]] == [11, 12]
+    assert reopened["positions"][0]["pending_pinned_percent"] == 25
+    assert [(row["offer_id"], row["share"]) for row in tracker.flows[52]["offers"]] == [
+        (row["keitaro_offer_id"], row["calculated_percent"]) for row in active
+    ]
+
+
 def test_publish_empty_offer_list_keeps_local_archive(api, tracker):
     stream = fetch(api)["streams"][1]
     draft = workspace(api, stream["id"])

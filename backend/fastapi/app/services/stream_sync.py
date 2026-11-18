@@ -127,7 +127,7 @@ def same_offers(old: StreamSnapshot, new: StreamSnapshot) -> bool:
 
 def offer_positions(session: Session, stream_id: UUID) -> list[StreamOffer]:
     return list(session.scalars(
-        select(StreamOffer).where(StreamOffer.stream_id == stream_id)
+        select(StreamOffer).where(StreamOffer.stream_id == stream_id, StreamOffer.is_deleted.is_(False))
         .order_by(StreamOffer.local_status, StreamOffer.position_index, StreamOffer.id)
     ))
 
