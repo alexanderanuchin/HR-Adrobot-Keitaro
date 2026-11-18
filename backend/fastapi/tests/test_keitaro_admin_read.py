@@ -26,6 +26,7 @@ from app.integrations.keitaro_admin import (
     KeitaroTimeoutError,
     KeitaroTransportError,
     KeitaroUpstreamError,
+    KeitaroValidationError,
 )
 
 
@@ -58,6 +59,7 @@ def mock_client(
     [
         (lambda c: c.list_campaigns(), "/admin_api/v1/campaigns", ""),
         (lambda c: c.list_campaigns(offset=5, limit=20), "/admin_api/v1/campaigns", "offset=5&limit=20"),
+        (lambda c: c.list_campaigns(limit=1001), "/admin_api/v1/campaigns", "limit=1001"),
         (lambda c: c.list_offers(), "/admin_api/v1/offers", ""),
         (lambda c: c.list_domains(), "/admin_api/v1/domains", ""),
         (lambda c: c.list_groups(), "/admin_api/v1/groups", "type=campaigns"),
@@ -130,12 +132,13 @@ def test_streams_missing_campaign_owner_are_rejected():
 
 
 @pytest.mark.parametrize("status,error", [
-    (400, KeitaroHTTPError),
+    (400, KeitaroValidationError),
     (401, KeitaroAuthenticationError),
     (402, KeitaroEditionError),
     (403, KeitaroAuthenticationError),
     (404, KeitaroNotFoundError),
-    (406, KeitaroHTTPError),
+    (406, KeitaroValidationError),
+    (422, KeitaroValidationError),
     (429, KeitaroRateLimitError),
     (500, KeitaroUpstreamError),
     (503, KeitaroUpstreamError),
@@ -215,7 +218,7 @@ def test_invalid_tracker_origin_rejected_before_http_client_creation(bad_url):
         KeitaroAdminReadClient(base_url=bad_url, api_key=TOKEN)
 
 
-@pytest.mark.parametrize("bad_key", ["", " ", " secret ", "line\nbreak", "line\rbreak"])
+@pytest.mark.parametrize("bad_key", ["", " ", " secret ", "line\nbreak", "line\rbreak", "nul\x00key", "токен"])
 def test_invalid_key_rejected_before_request(bad_key):
     with pytest.raises(KeitaroConfigurationError):
         KeitaroAdminReadClient(base_url=ROOT, api_key=bad_key)
@@ -236,7 +239,7 @@ def test_bad_ids_rejected_before_request(bad_id):
     assert reqs == []
 
 
-@pytest.mark.parametrize("offset,limit", [(-1, None), (True, None), ("1", None), (0, 0), (0, 1001), (0, 1.5), (0, True)])
+@pytest.mark.parametrize("offset,limit", [(-1, None), (True, None), ("1", None), (0, 0), (0, -1), (0, 1.5), (0, True)])
 def test_bad_pagination_rejected_without_request(offset, limit):
     with mock_client() as (client, reqs):
         with pytest.raises(KeitaroRequestError):

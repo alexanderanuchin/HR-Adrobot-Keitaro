@@ -1,15 +1,4 @@
-"""Read-only preflight for the two-stream campaign creator (Michael's task).
-
-This stage deliberately does not execute POST/PUT/DELETE or persist to SQL.
-It validates the *remote* offer, domain, group and traffic source before a
-future, separately reviewed write-side orchestration is enabled.
-
-The campaign POST contract is published by Keitaro. Flow creation, domain
-association and partial-failure recovery are NOT implemented by this module:
-those must be validated against the selected Keitaro instance before writes.
-
-Reference: https://admin-api.docs.keitaro.io/
-"""
+"""Validate Keitaro references and plan the two streams using read requests."""
 
 from __future__ import annotations
 
@@ -38,7 +27,7 @@ class CampaignPreflightError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class CampaignCreationRequest:
-    """Parameters accepted by the future creator; IDs come from Keitaro."""
+    """Campaign parameters and selected Keitaro IDs."""
 
     name: str
     geo: str
@@ -51,7 +40,7 @@ class CampaignCreationRequest:
 
 @dataclass(frozen=True, slots=True)
 class StreamIntent:
-    """Semantic behavior, NOT an unverified Keitaro POST /streams payload."""
+    """Describe where a stream should send traffic."""
 
     order: int
     kind: str
@@ -125,12 +114,7 @@ def prepare_campaign_creation(
     client: KeitaroAdminReadClient,
     request: CampaignCreationRequest,
 ) -> CampaignCreationPlan:
-    """Validate references with GET only and build a two-flow semantic plan.
-
-    No separate network retry, no network writes, no SQL writes. The output is
-    NOT sufficient to trigger campaign creation: a write service must also
-    enforce idempotency, real flow schemas and post-write verification.
-    """
+    """Validate references with GET and build the planned campaign and flows."""
     values = _check_request(request)
     offer = client.get_offer(values.offer_id)
     if offer.id != values.offer_id:
@@ -147,15 +131,13 @@ def prepare_campaign_creation(
     source = _one_by_id(client.list_traffic_sources(), values.traffic_source_id, "Traffic source")
     _active(source, "Traffic source")
 
-    # Group id is documented as a STRING in campaign create request.
-    # The domain is not inserted into this payload: its selected ID is retained
-    # separately until domain binding is verified against the actual tracker.
     return CampaignCreationPlan(
         campaign_post_fields={
             "alias": values.alias,
             "name": values.name,
             "type": "position",  # Route in order; do not split flows by weight.
             "group_id": str(values.group_id),
+            "domain_id": values.domain_id,
             "traffic_source_id": values.traffic_source_id,
         },
         domain_id=values.domain_id,

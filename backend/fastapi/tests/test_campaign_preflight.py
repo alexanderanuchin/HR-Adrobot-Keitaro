@@ -68,7 +68,7 @@ def test_valid_plan_has_exactly_two_position_ordered_flows(creation_input):
         plan = prepare_campaign_creation(client, creation_input)
     assert plan.campaign_post_fields == {
         "alias": "campaign-au-2026", "name": "Campaign AU", "type": "position",
-        "group_id": "17", "traffic_source_id": 836,
+        "group_id": "17", "domain_id": 1813, "traffic_source_id": 836,
     }
     assert plan.domain_id == 1813
     assert len(plan.streams) == 2
@@ -80,7 +80,6 @@ def test_valid_plan_has_exactly_two_position_ordered_flows(creation_input):
     assert plan.streams[1].country_code is None
     assert plan.streams[1].redirect_url is None
     assert plan.streams[1].offer_id == 4514
-    assert "domain_id" not in plan.campaign_post_fields  # Not documented as campaign POST field.
     assert [x.url.path for x in sent] == [
         "/admin_api/v1/offers/4514",
         "/admin_api/v1/domains",

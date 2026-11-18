@@ -1,19 +1,12 @@
-"""Read-only Keitaro Admin API v1 transport (A-01..A-04).
-
-Official routes: https://admin-api.docs.keitaro.io/.
-All calls are GET, with no automatic retries or redirect following.
-The transport deliberately does NOT normalize stream actions, offer weights,
-filters, or removed associations: FETCH will do that in a separate adapter.
-
-The caller can inject an ``httpx.Client`` with ``MockTransport`` for tests.
-Never log the configured key, request headers, response bodies or raw objects.
-"""
+"""Keitaro Admin API v1 clients with no automatic retries or redirects."""
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from math import isfinite
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
 import httpx
@@ -41,11 +34,11 @@ class KeitaroTransportError(KeitaroError):
 
 
 class KeitaroTimeoutError(KeitaroTransportError):
-    """GET exceeded the configured HTTP timeout; nothing was retried."""
+    """Request timed out. A write may have reached Keitaro."""
 
 
 class KeitaroHTTPError(KeitaroError):
-    """Non-200 response; do not expose the potentially sensitive body."""
+    """Unexpected HTTP status with the potentially sensitive body omitted."""
 
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code
@@ -64,6 +57,10 @@ class KeitaroNotFoundError(KeitaroHTTPError):
     """The requested resource does not exist (404)."""
 
 
+class KeitaroValidationError(KeitaroHTTPError):
+    """Keitaro rejected the request parameters or body (400, 406, 422)."""
+
+
 class KeitaroRateLimitError(KeitaroHTTPError):
     """The tracker refused the request due to its rate limit (429)."""
 
@@ -73,7 +70,7 @@ class KeitaroUpstreamError(KeitaroHTTPError):
 
 
 class KeitaroResponseError(KeitaroError):
-    """A 200 response did not match the documented JSON resource shape."""
+    """A successful response did not match the expected resource."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +84,15 @@ class KeitaroRecord:
     id: int
     name: str = field(repr=False)
     raw: dict[str, Any] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamOfferAssignment:
+    """One offer association in the desired stream configuration."""
+
+    offer_id: int
+    share: int
+    state: Literal["active", "disabled"] = "active"
 
 
 def _tracker_origin(base_url: str) -> str:
@@ -124,13 +130,15 @@ def _records(payload: object) -> tuple[KeitaroRecord, ...]:
     return tuple(_record(item) for item in payload)
 
 
-def _record(payload: object) -> KeitaroRecord:
+def _record(payload: object, *, expected_id: int | None = None) -> KeitaroRecord:
     if not isinstance(payload, dict):
         raise KeitaroResponseError("Expected a JSON entity from Keitaro")
     entity_id = payload.get("id")
     name = payload.get("name")
     if type(entity_id) is not int or entity_id <= 0 or not isinstance(name, str):
         raise KeitaroResponseError("Keitaro entity needs a positive integer ID and string name")
+    if expected_id is not None and entity_id != expected_id:
+        raise KeitaroResponseError("Keitaro returned the wrong entity")
     return KeitaroRecord(id=entity_id, name=name, raw=payload)
 
 
@@ -150,7 +158,12 @@ class KeitaroAdminReadClient:
         client: httpx.Client | None = None,
     ) -> None:
         self._origin = _tracker_origin(base_url)
-        if not isinstance(api_key, str) or not api_key or api_key != api_key.strip() or "\n" in api_key or "\r" in api_key:
+        if (
+            not isinstance(api_key, str)
+            or not api_key
+            or api_key != api_key.strip()
+            or any(not 32 <= ord(char) <= 126 for char in api_key)
+        ):
             raise KeitaroConfigurationError("A valid Keitaro Admin API key is required")
         if type(timeout) not in (float, int) or not isfinite(timeout) or not 0 < timeout <= 120:
             raise KeitaroConfigurationError("Keitaro HTTP timeout must be between 0 and 120 seconds")
@@ -165,7 +178,7 @@ class KeitaroAdminReadClient:
     @classmethod
     def from_settings(
         cls, settings: Settings, *, client: httpx.Client | None = None,
-    ) -> KeitaroAdminReadClient:
+    ) -> Self:
         return cls(
             base_url=settings.keitaro_base_url,
             api_key=settings.keitaro_api_key,
@@ -173,7 +186,7 @@ class KeitaroAdminReadClient:
             client=client,
         )
 
-    def __enter__(self) -> KeitaroAdminReadClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
@@ -184,18 +197,30 @@ class KeitaroAdminReadClient:
             self._client.close()
 
     def _get_json(self, resource: str, *, params: dict[str, int | str] | None = None) -> object:
+        return self._request_json("GET", resource, params=params)
+
+    def _request_json(
+        self,
+        method: str,
+        resource: str,
+        *,
+        params: dict[str, int | str] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> object:
         # Resource is a fixed internal literal or a validated positive integer.
         url = f"{self._origin}/admin_api/v1/{resource}"
         try:
-            response = self._client.get(
+            response = self._client.request(
+                method,
                 url,
                 params=params,
+                json=body,
                 headers={"Api-Key": self._api_key, "Accept": "application/json"},
                 timeout=self._timeout,
                 follow_redirects=False,
             )
         except httpx.TimeoutException:
-            raise KeitaroTimeoutError("Keitaro Admin API GET timed out") from None
+            raise KeitaroTimeoutError(f"Keitaro Admin API {method} timed out") from None
         except httpx.RequestError:
             raise KeitaroTransportError("Unable to reach Keitaro Admin API") from None
 
@@ -207,6 +232,8 @@ class KeitaroAdminReadClient:
                 exception_type = KeitaroEditionError
             elif response.status_code == 404:
                 exception_type = KeitaroNotFoundError
+            elif response.status_code in (400, 406, 422):
+                exception_type = KeitaroValidationError
             elif response.status_code == 429:
                 exception_type = KeitaroRateLimitError
             elif response.status_code >= 500:
@@ -222,8 +249,8 @@ class KeitaroAdminReadClient:
     def list_campaigns(self, *, offset: int = 0, limit: int | None = None) -> tuple[KeitaroRecord, ...]:
         if type(offset) is not int or offset < 0:
             raise KeitaroRequestError("offset must be a non-negative integer")
-        if limit is not None and (type(limit) is not int or not 1 <= limit <= 1000):
-            raise KeitaroRequestError("limit must be an integer from 1 to 1000")
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise KeitaroRequestError("limit must be a positive integer")
         params: dict[str, int] = {}
         if offset:
             params["offset"] = offset
@@ -233,10 +260,7 @@ class KeitaroAdminReadClient:
 
     def get_campaign(self, campaign_id: int) -> KeitaroRecord:
         cid = _positive_id(campaign_id, "campaign_id")
-        record = _record(self._get_json(f"campaigns/{cid}"))
-        if record.id != cid:
-            raise KeitaroResponseError("Keitaro returned the wrong campaign")
-        return record
+        return _record(self._get_json(f"campaigns/{cid}"), expected_id=cid)
 
     def list_streams(self, campaign_id: int) -> tuple[KeitaroRecord, ...]:
         cid = _positive_id(campaign_id, "campaign_id")
@@ -248,20 +272,14 @@ class KeitaroAdminReadClient:
 
     def get_stream(self, stream_id: int) -> KeitaroRecord:
         sid = _positive_id(stream_id, "stream_id")
-        record = _record(self._get_json(f"streams/{sid}"))
-        if record.id != sid:
-            raise KeitaroResponseError("Keitaro returned the wrong stream")
-        return record
+        return _record(self._get_json(f"streams/{sid}"), expected_id=sid)
 
     def list_offers(self) -> tuple[KeitaroRecord, ...]:
         return _records(self._get_json("offers"))
 
     def get_offer(self, offer_id: int) -> KeitaroRecord:
         oid = _positive_id(offer_id, "offer_id")
-        record = _record(self._get_json(f"offers/{oid}"))
-        if record.id != oid:
-            raise KeitaroResponseError("Keitaro returned the wrong offer")
-        return record
+        return _record(self._get_json(f"offers/{oid}"), expected_id=oid)
 
     def list_domains(self) -> tuple[KeitaroRecord, ...]:
         return _records(self._get_json("domains"))
@@ -273,3 +291,64 @@ class KeitaroAdminReadClient:
 
     def list_traffic_sources(self) -> tuple[KeitaroRecord, ...]:
         return _records(self._get_json("traffic_sources"))
+
+
+def stream_offer_assignments(record: KeitaroRecord) -> tuple[StreamOfferAssignment, ...]:
+    """Read the fields shared by the OfferStream and OfferStreamRequest schemas."""
+    offers = record.raw.get("offers")
+    if not isinstance(offers, list):
+        raise KeitaroResponseError("Expected a JSON array of stream offers from Keitaro")
+    result = []
+    for offer in offers:
+        if not isinstance(offer, dict):
+            raise KeitaroResponseError("Invalid Keitaro stream offer")
+        assignment = StreamOfferAssignment(offer.get("offer_id"), offer.get("share"), offer.get("state"))
+        if not _valid_assignment(assignment):
+            raise KeitaroResponseError("Invalid Keitaro stream offer ID, share or state")
+        result.append(assignment)
+    return tuple(result)
+
+
+def _valid_assignment(assignment: StreamOfferAssignment) -> bool:
+    return (
+        type(assignment.offer_id) is int
+        and 0 < assignment.offer_id <= 9_223_372_036_854_775_807
+        and type(assignment.share) is int
+        and 0 <= assignment.share <= 100
+        and assignment.state in ("active", "disabled")
+    )
+
+
+class KeitaroAdminClient(KeitaroAdminReadClient):
+    """Write methods for campaign creation and editing stream associations."""
+
+    def create_campaign(self, fields: dict[str, Any]) -> KeitaroRecord:
+        return _record(self._request_json("POST", "campaigns", body=fields))
+
+    def create_stream(self, fields: dict[str, Any]) -> KeitaroRecord:
+        cid = _positive_id(fields.get("campaign_id"), "campaign_id")
+        record = _record(self._request_json("POST", "streams", body=fields))
+        if type(record.raw.get("campaign_id")) is not int or record.raw["campaign_id"] != cid:
+            raise KeitaroResponseError("Keitaro returned a stream for a different campaign")
+        return record
+
+    def enable_campaign(self, campaign_id: int) -> KeitaroRecord:
+        cid = _positive_id(campaign_id, "campaign_id")
+        return _record(self._request_json("POST", f"campaigns/{cid}/enable"), expected_id=cid)
+
+    def replace_stream_offers(
+        self, stream_id: int, offers: Sequence[StreamOfferAssignment],
+    ) -> KeitaroRecord:
+        """Send the full desired association list using a partial flow update."""
+        sid = _positive_id(stream_id, "stream_id")
+        assignments = tuple(offers)
+        if any(not isinstance(offer, StreamOfferAssignment) or not _valid_assignment(offer) for offer in assignments):
+            raise KeitaroRequestError("Each stream offer needs a positive ID, integer share from 0 to 100, and valid state")
+        body = {"offers": [
+            {"offer_id": offer.offer_id, "share": offer.share, "state": offer.state}
+            for offer in assignments
+        ]}
+        record = _record(self._request_json("PUT", f"streams/{sid}", body=body), expected_id=sid)
+        if Counter(stream_offer_assignments(record)) != Counter(assignments):
+            raise KeitaroResponseError("Keitaro returned different stream offer assignments")
+        return record
