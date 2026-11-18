@@ -153,6 +153,7 @@ def _save_edit(
     added: DraftOffer | None = None,
     removed_id: UUID | None = None,
     restored_id: UUID | None = None,
+    delete_position: bool = False,
     pins: dict[UUID, OfferPin],
 ) -> DraftWorkspaceView:
     # Database compare-and-swap is a second line of defence in addition to
@@ -177,6 +178,7 @@ def _save_edit(
     for row in rows:
         if row.id == removed_id:
             row.status = DRAFT_OFFER_REMOVED
+            row.is_deleted = delete_position
         elif row.id == restored_id:
             row.status = DRAFT_OFFER_ACTIVE
         if row.id in pins:
@@ -243,11 +245,12 @@ def remove_offer_from_draft(
     draft_id: UUID,
     expected_revision: int,
     position_id: UUID,
+    delete_position: bool = False,
 ) -> DraftWorkspaceView:
-    """REMOVE exactly one local position by UUID; archive it with 0 percent.
+    """Archive a position, or stage its deletion from this stream and archive.
 
-    Its global Keitaro offer, remote association, source position and saved PIN
-    are untouched. The local row remains available for future BRING BACK.
+    The global Keitaro offer and current published associations are unchanged
+    until publication checks and applies the draft.
     """
     _validate_request(draft_id, expected_revision)
     if not isinstance(position_id, UUID):
@@ -256,15 +259,17 @@ def remove_offer_from_draft(
     draft = _locked_draft(session, draft_id, expected_revision)
     rows = _draft_positions(session, draft.id)
     row = next((row for row in rows if row.id == position_id), None)
-    if row is None:
+    if row is None or row.is_deleted:
         raise DraftEditNotFound("offer position not found in this draft")
-    if row.status == DRAFT_OFFER_REMOVED:
+    if row.status == DRAFT_OFFER_REMOVED and not delete_position:
         raise DraftEditError("offer position is already removed")
-    if row.status != DRAFT_OFFER_ACTIVE:
-        raise DraftEditBlocked("offer position is not active")
 
-    pins = _activate_pending_pins(rows, position_id)
-    calculated = _calculate(rows, pins=pins, removed_id=position_id)
+    pins = {}
+    if row.status == DRAFT_OFFER_ACTIVE:
+        pins = _activate_pending_pins(rows, position_id)
+        calculated = _calculate(rows, pins=pins, removed_id=position_id)
+    else:
+        calculated = {item.id: item.calculated_percent for item in rows}
     return _save_edit(
         session,
         draft=draft,
@@ -273,6 +278,7 @@ def remove_offer_from_draft(
         calculated=calculated,
         pins=pins,
         removed_id=position_id,
+        delete_position=delete_position,
     )
 
 
@@ -295,7 +301,7 @@ def bring_back_offer_in_draft(
     draft = _locked_draft(session, draft_id, expected_revision)
     rows = _draft_positions(session, draft.id)
     row = next((item for item in rows if item.id == position_id), None)
-    if row is None:
+    if row is None or row.is_deleted:
         raise DraftEditNotFound("offer position not found in this draft")
     if row.status == DRAFT_OFFER_ACTIVE:
         raise DraftEditError("offer position is already active")
@@ -342,7 +348,7 @@ def pin_offer_in_draft(
     draft = _locked_draft(session, draft_id, expected_revision)
     rows = _draft_positions(session, draft.id)
     row = next((item for item in rows if item.id == position_id), None)
-    if row is None:
+    if row is None or row.is_deleted:
         raise DraftEditNotFound("offer position not found in this draft")
     if row.status != DRAFT_OFFER_ACTIVE:
         raise DraftEditBlocked("only active offer positions can be pinned")

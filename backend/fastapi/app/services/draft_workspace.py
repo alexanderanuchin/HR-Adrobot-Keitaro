@@ -50,6 +50,7 @@ class DraftOfferView:
     pinned_percent: int | None
     pin_immediately: bool
     pending_pinned_percent: int | None
+    is_deleted: bool
     calculated_percent: int
 
 
@@ -96,6 +97,7 @@ def read_draft_workspace(session: Session, draft_id: UUID) -> DraftWorkspaceView
                 pinned_percent=offer.pinned_percent,
                 pin_immediately=offer.pin_immediately,
                 pending_pinned_percent=offer.pending_pinned_percent,
+                is_deleted=offer.is_deleted,
                 calculated_percent=offer.calculated_percent,
             )
             for offer in offers
@@ -213,7 +215,7 @@ def open_or_create_draft_workspace(
         raise DraftWorkspaceError("base_snapshot_id is not the latest captured snapshot")
 
     source_rows = session.scalars(
-        select(StreamOffer).where(StreamOffer.stream_id == stream_id)
+        select(StreamOffer).where(StreamOffer.stream_id == stream_id, StreamOffer.is_deleted.is_(False))
     ).all()
     _validate_initial_positions(initial_positions, source_rows)
 

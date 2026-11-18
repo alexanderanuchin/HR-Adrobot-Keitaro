@@ -65,6 +65,7 @@ class StreamOffer(Base):
             "local_status IN ('ACTIVE', 'REMOVED')",
             name="ck_kt_stream_offers_local_status",
         ),
+        CheckConstraint("NOT is_deleted OR local_status = 'REMOVED'", name="ck_kt_stream_offers_deleted_status"),
         CheckConstraint(
             "pinned_percent IS NULL OR pinned_percent BETWEEN 0 AND 100",
             name="ck_kt_stream_offers_pinned_percent_range",
@@ -108,6 +109,7 @@ class StreamOffer(Base):
     pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pin_immediately: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     pending_pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

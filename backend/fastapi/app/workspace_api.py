@@ -66,10 +66,11 @@ class AddInput(RevisionInput):
 
 
 class EditInput(RevisionInput):
-    action: Literal["remove", "bring_back", "pin"]
+    action: Literal["remove", "delete", "bring_back", "pin"]
     position_id: UUID
     pinned_percent: Annotated[int, Field(strict=True, ge=0, le=100)] | None = None
     pin_immediately: Annotated[bool, Field(strict=True)] | None = None
+    confirm_deletion: Annotated[bool, Field(strict=True)] = False
 
 
 class CancelInput(RevisionInput):
@@ -85,6 +86,7 @@ def _draft_view(session: Session, view: DraftWorkspaceView | None) -> dict | Non
         return None
     details = session.get(StreamDraft, view.draft_id).conflict_details or {}
     result = asdict(view)
+    result["positions"] = tuple(row for row in result["positions"] if not row["is_deleted"])
     result["reason"] = details.get("reason")
     result["upstream_status"] = details.get("status_code")
     result["reconciliation_checked"] = details.get("checked") is True
@@ -193,9 +195,12 @@ def add_offer(draft_id: UUID, payload: AddInput, client: Tracker, engine: Databa
 @router.post("/drafts/{draft_id}/edit")
 def edit(draft_id: UUID, payload: EditInput, engine: Database) -> dict:
     fields = {"draft_id": draft_id, "expected_revision": payload.revision, "position_id": payload.position_id}
+    deleting = payload.action == "delete"
+    if deleting and not payload.confirm_deletion:
+        raise HTTPException(status_code=422, detail="Подтвердите удаление строки оффера.")
     with Session(engine) as session, session.begin():
-        if payload.action == "remove":
-            view = remove_offer_from_draft(session, **fields)
+        if payload.action in ("remove", "delete"):
+            view = remove_offer_from_draft(session, **fields, delete_position=deleting)
         elif payload.action == "bring_back":
             view = bring_back_offer_in_draft(session, **fields)
         else:
