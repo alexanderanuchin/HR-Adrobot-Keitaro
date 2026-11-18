@@ -203,6 +203,45 @@ def test_workspace_requires_internal_key_and_limits_responses(api, tracker):
     assert api.get(f"{PREFIX}/campaigns/remote").json()["items"] == [{"id": 42, "name": "Demo"}]
 
 
+def test_stream_history_tracks_edits_across_campaigns_and_reopens_saved_draft(api, tracker):
+    history = f"{PREFIX}/streams/history"
+    assert api.get(history, headers={"X-Internal-Key": "invalid"}).status_code == 403
+    first_id = fetch(api)["streams"][1]["id"]
+    first_draft = workspace(api, first_id)
+    assert api.get(history).json() == {"items": [], "next_offset": None}
+
+    first_draft = add(api, first_draft)
+    assert publish(api, first_draft)["status"] == "PUBLISHED"
+    tracker.campaigns[43] = {"id": 43, "name": "Second campaign", "alias": "demo-second", "state": "active"}
+    first_remote = tracker.flows[52]
+    tracker.flows[53] = {
+        **first_remote, "id": 53, "campaign_id": 43,
+        "offers": [{**offer, "stream_id": 53} for offer in first_remote["offers"]],
+    }
+    second_id = post(api, "campaigns/43/fetch")["streams"][0]["id"]
+    second_draft = workspace(api, second_id)
+    second_draft = change(api, second_draft, "remove", second_draft["positions"][0])
+
+    upstream_requests = len(tracker.requests)
+    page = api.get(history).json()
+    assert page["next_offset"] is None
+    first_item, second_item = page["items"]
+    assert [(item["campaign_id"], item["stream_id"], item["status"]) for item in page["items"]] == [
+        (43, 53, "DIRTY"), (42, 52, "PUBLISHED"),
+    ]
+    assert first_item["campaign_name"] == "Second campaign"
+    assert first_item["stream_name"] == second_item["stream_name"] == "Offers"
+    assert all(item["can_open"] and item["edited_at"] for item in page["items"])
+    assert api.get(history, params={"offset": 1}).json()["items"] == [second_item]
+    assert workspace(api, second_id) == second_draft
+    assert api.get(history).json() == page
+    assert len(tracker.requests) == upstream_requests
+
+    del tracker.flows[52]
+    fetch(api)
+    assert api.get(history).json()["items"][1]["can_open"] is False
+
+
 def test_offer_catalog_pages_active_offers_and_keeps_exact_id_search(api, tracker):
     tracker.catalog["offers"] = [
         {"id": number, "name": f"Test offer {number}", "state": "active"} for number in range(100, 152)

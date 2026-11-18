@@ -1,7 +1,6 @@
 """Transactional ADD and REMOVE for unpublished Keitaro stream drafts.
 
-These operations modify only ``kt_draft_offers`` and ``kt_stream_drafts``.
-They never call Keitaro, alter a global offer or change ``kt_stream_offers``.
+These operations modify the draft and record its stream's last edit time.
 
 Caller contract: invoke inside a SQLAlchemy transaction (e.g.
 ``with Session(engine).begin(): ...``) and roll it back on any exception.
@@ -158,7 +157,7 @@ def _save_edit(
 ) -> DraftWorkspaceView:
     # Database compare-and-swap is a second line of defence in addition to
     # SELECT FOR UPDATE; no stale caller can silently overwrite newer edits.
-    next_revision = session.scalar(
+    edited_at = session.scalar(
         update(StreamDraft)
         .where(StreamDraft.id == draft.id)
         .where(StreamDraft.revision == expected_revision)
@@ -168,10 +167,11 @@ def _save_edit(
             status=DRAFT_DIRTY,
             updated_at=func.clock_timestamp(),
         )
-        .returning(StreamDraft.revision)
+        .returning(StreamDraft.updated_at)
     )
-    if next_revision is None:
+    if edited_at is None:
         raise DraftRevisionConflict("draft changed during editing; reload")
+    session.execute(update(Stream).where(Stream.id == draft.stream_id).values(last_edited_at=edited_at))
 
     if added is not None:
         session.add(added)
