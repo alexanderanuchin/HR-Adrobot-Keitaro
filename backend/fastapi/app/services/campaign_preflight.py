@@ -131,6 +131,11 @@ def prepare_campaign_creation(
     source = _one_by_id(client.list_traffic_sources(), values.traffic_source_id, "Traffic source")
     _active(source, "Traffic source")
 
+    return campaign_creation_plan(values)
+
+
+def campaign_creation_plan(request: CampaignCreationRequest) -> CampaignCreationPlan:
+    values = _check_request(request)
     return CampaignCreationPlan(
         campaign_post_fields={
             "alias": values.alias,

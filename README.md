@@ -1,114 +1,76 @@
 # HR-Adrobot-Keitaro
 
-Adrobot — test assignment: Keitaro campaign creator and a draft-based offer editor.
+Рабочее пространство для создания кампаний Keitaro и редактирования офферов в потоках.
 
-The repository includes the service scaffold, SQLAlchemy models and migrations,
-local offer drafts, and a server-side Keitaro Admin API client. Campaign creation
-and stream-offer updates are available through Python calls in the FastAPI backend.
+- **Создание кампании.** Оператор выбирает страну, оффер, домен, группу и источник. Первый поток перенаправляет посетителей указанной страны на Google, второй отправляет остальной трафик на оффер. Кампания включается после сверки обоих потоков.
+- **Редактор.** FETCH синхронизирует кампанию с Keitaro. ADD, REMOVE, BRING BACK, PIN и UNPIN сохраняются в черновике PostgreSQL. CANCEL загружает чистый черновик из последнего сохранённого снимка. PUSH проверяет удалённое состояние, обновляет список офферов и перечитывает поток.
 
-## Architecture (approved A-01 to A-04)
+## Локальный запуск
 
-- `frontend/` — React 19 / TypeScript / SCSS + Vite.
-- `backend/django/` — Django 5.2 / DRF: authentication, administrator settings, future Telegram/monitoring models. Django migrations own its tables only.
-- `backend/fastapi/` — FastAPI / SQLAlchemy 2.x / Alembic: Keitaro integration, campaigns, streams, snapshots, drafts, offers and operations (to be added in later commits). Alembic owns `kt_*` tables only.
-- `backend/bot/` — aiogram skeleton. No bot polling until a valid token is configured.
-- `postgres` — one PostgreSQL DB; `redis` — Celery broker/result store.
-- Django communicates with FastAPI over an authenticated internal HTTP API. Keitaro credentials are server-only.
-- Keitaro is the source of truth for published data; drafts and removed-offer history remain local.
-
-## Requirements
-
-Docker Desktop with Compose v2 and Git Bash. For local non-Docker development:
-Python 3.12+, Node.js 22+, PostgreSQL 17, Redis 7.4.
-
-## First-time setup (Git Bash)
+Требуются Docker Desktop с Compose v2 и Git Bash. Команды выполняются из корня репозитория.
 
 ```bash
-git clone https://github.com/alexanderanuchin/HR-Adrobot-Keitaro.git
-cd HR-Adrobot-Keitaro
-# Extract the provided scaffold ZIP into THIS directory, preserving paths.
-# .env is local and ignored. If absent: cp .env.example .env
-# Review .env and set local passwords/secrets; add real Keitaro API key only locally later.
-docker compose config --quiet
-docker compose up -d --build postgres redis fastapi django frontend
-docker compose exec django python manage.py migrate --noinput
-docker compose exec fastapi alembic upgrade head
-# Only if needed, create a local Django administrator:
-docker compose exec django python manage.py createsuperuser
+test -f .env || cp .env.example .env
 ```
 
-Services:
-
-- UI: http://localhost:5173
-- Django admin: http://localhost:8001/admin/
-- Django health: http://localhost:8001/api/v1/health/
-- FastAPI lives **only on the internal Compose network** (`fastapi:8000`).
-
-To run worker and DB-backed scheduler (skeleton only; no monitoring schedule is configured):
+Заполните в `.env` локальные пароли, `DJANGO_SECRET_KEY` и `INTERNAL_API_KEY`. Для подключения трекера укажите HTTPS origin в `KEITARO_BASE_URL` и ключ с необходимыми правами в `KEITARO_API_KEY`. Оставьте ключ пустым для запуска и проверок с моками.
 
 ```bash
-docker compose --profile automation up -d celery_worker celery_beat
+bash infra/scripts/dev.sh up
+bash infra/scripts/dev.sh admin
 ```
 
-To enable Telegram later, populate `TELEGRAM_BOT_TOKEN` in `.env` and run:
+Откройте [React](http://localhost:5173/) и войдите созданной учётной записью. Django допускает к рабочему пространству пользователей с `is_staff`. [Django admin](http://localhost:8001/admin/) принимает ту же учётную запись. FastAPI доступен Django по внутренней сети Compose.
+
+После изменения кода выполните `bash infra/scripts/dev.sh rebuild`. Скрипты `up`, `rebuild` и `migrate` сохраняют резервную копию PostgreSQL в игнорируемом каталоге `var/backups` перед миграциями. Храните `.env` и дампы локально.
+
+## Демонстрация
+
+1. На странице создания заполните название, код страны, справочники и выберите активный оффер по имени или ID. Алиас можно задать явно или сгенерировать автоматически.
+2. После создания откройте кампанию в редакторе и нажмите **FETCH STREAMS FROM KT**. Поток редиректа отображается в режиме просмотра. В резервном потоке можно открыть офферы.
+3. Добавьте оффер, удалите позицию и верните её через **BRING BACK**. Доля позиции в архиве равна 0%. Активные позиции делят 100% при наличии хотя бы одной позиции. **PIN** фиксирует долю, **UNPIN** возвращает позицию в распределение.
+4. Обновите страницу и снова откройте поток. Сохранённый черновик загрузится из PostgreSQL. **CANCEL** отбрасывает локальные изменения. **PUSH TO KT** с подтверждением публикует текущий список.
+
+## Конфликт и восстановление
+
+- **Создание.** Попытка сохраняется по алиасу до первого POST. Повтор с теми же данными возвращает подтверждённый результат или перечитывает Keitaro. Если кампания создана частично, состояние остаётся `UNCERTAIN`. Алиас и известный ID отображаются для проверки в трекере.
+- **Параллельное редактирование.** Записи проверяют `revision` черновика. При изменении состава, порядка или долей офферов в Keitaro локальные правки сохраняются, а PUSH блокируется. CANCEL открывает свежий снимок. Изменения полей маршрутизации при неизменном составе офферов допускают перенос черновика на новый снимок.
+- **Неоднозначный PUSH.** Перед PUT приложение сохраняет намерение в БД. Отдельный GET сверяет офферы и поля маршрутизации. При потере ответа FETCH может подтвердить уже применённую запись. Пока итог неясен, кнопка PUSH недоступна. После успешного FETCH можно подтвердить отмену локального черновика.
+- **Архив.** Оффер, исчезнувший из потока, остаётся локальной позицией, доступной для BRING BACK. Запрос публикации изменяет только `offers` конкретного потока.
+
+Режим редактирования рассчитан на один Keitaro origin для одной БД. Блокировки и ревизии защищают операции между экземплярами приложения. У Admin API нет задокументированного условного PUT, поэтому внешнее изменение между последним GET и PUT может потребовать ручной сверки.
+
+## Проверки
 
 ```bash
-docker compose --profile telegram up -d telegram_bot
+bash infra/scripts/dev.sh test
+docker compose exec -T fastapi alembic current
+docker compose exec -T fastapi alembic check
+docker compose exec -T fastapi python -m pytest -q tests/test_workspace_api.py
+docker compose exec -T django python manage.py test gateway --noinput
+git diff --check
+python infra/scripts/check_repo_safety.py --self-test
+python infra/scripts/check_repo_safety.py
 ```
 
-**Do not launch the Telegram bot without an authorized token.** The bot currently implements only `/start` and `/status` informational messages, no campaign mutations or real monitoring.
+`test_workspace_api.py` использует настоящую PostgreSQL с отдельной тестовой схемой и `httpx.MockTransport` для Keitaro. Тесты проверяют последовательность создания и повтор без дубликата, синхронизацию, отмену, конфликт, потерю ответа, пустой список офферов и повторное чтение. Django проверяет сессии, CSRF и проксирование. Команда `dev.sh test` также запускает проверку типов и сборку React.
 
-## Migration ownership
-
-**Django** owns `accounts_user`, auth/session/admin tables and future monitoring/settings tables:
+При наличии разрешённого ключа диагностическая команда делает GET-запросы и выводит только структурную сводку.
 
 ```bash
-docker compose exec django python manage.py makemigrations --check --dry-run
-docker compose exec django python manage.py migrate --noinput
+docker compose exec -T fastapi python -m app.integrations.keitaro_contract_probe
+# Дополнительно для доступной кампании
+docker compose exec -T fastapi python -m app.integrations.keitaro_contract_probe --campaign-id 123
 ```
 
-**SQLAlchemy** owns future `kt_*` tables. The baseline revision is intentionally empty:
+GET-проверка на `tlgk.host` подтвердила каталог действий с полем `url` для HTTP-редиректа, чтение `domain_id` в карточке кампании и форматы потоков `redirect` и `landings`. Если ответ на создание или включение не содержит `domain_id`, сервис сверяет домен через GET карточки.
 
-```bash
-docker compose exec fastapi alembic current
-docker compose exec fastapi alembic upgrade head
-```
+На выделенном стенде предстоит подтвердить приём `action_options.url` и GEO-фильтра при записи, фактический редирект по двум GEO, замену списка ассоциаций и пустой список офферов. Схема POST `/streams` описывает `action_options` как объект без определения вложенного ключа URL. [Keitaro Admin API](https://admin-api.docs.keitaro.io/)
 
-Future schema updates must use migrations from the *owning* ORM. Alembic autogenerate will be scoped to the `kt_*` family when models are added. Never run two independent migrations against the same table.
+## Архитектура и миграции
 
-## Checks
+- Django владеет учётными записями, сессиями и Django-таблицами. Шлюз проверяет сессию и CSRF, затем аутентифицирует запрос к FastAPI отдельным внутренним ключом.
+- FastAPI владеет интеграцией и таблицами `kt_*`. Alembic хранит ссылки на кампании и потоки, нормализованные снимки, архивные позиции, черновики и журнал создания. Keitaro остаётся источником опубликованных данных.
+- Redis, Celery и aiogram предоставляют основу для фоновых задач. Рабочие сценарии создания и редактора используют синхронные запросы. Продуктовые уведомления и расписание мониторинга пока не настроены.
 
-```bash
-# Requires Docker containers:
-docker compose exec django python manage.py check
-docker compose exec django python manage.py test accounts --noinput
-docker compose exec fastapi python -m pytest -q
-# Frontend dependencies installed in container during build:
-docker compose exec frontend npm run typecheck
-docker compose exec frontend npm run build
-# CI will run all static checks/builds and migration smoke tests.
-```
-
-Run `docker compose logs --tail=100 django fastapi frontend` for troubleshooting.
-Run `docker compose down` to stop services; **do not use `down -v`** unless you deliberately want to destroy the local database volume.
-
-## Credentials and safety
-
-`.env` is ignored and never committed. `.env.example` only contains placeholders. Local demo secrets are generated per ZIP. Never put employer credentials, an API token, Telegram token or database password into Git, screenshots, logs or Actions YAML. Rotate any previously exposed real passwords.
-
-`app.services.campaign_creation.create_campaign` uses `KeitaroAdminClient` to create
-a disabled campaign, verify the two streams, and enable it. On failure, inspect
-the reported stage and campaign ID in Keitaro before retrying. A timeout can occur
-after the tracker applies a write.
-
-`KeitaroAdminClient.replace_stream_offers` sends the desired list of offer IDs,
-shares and states to the flow update endpoint. Draft positions marked as removed
-are omitted when building the list for publication.
-
-The tests use simulated Admin API responses. Live verification should cover the
-campaign's domain binding, GEO redirect and fallback routing, and the behavior of
-partial flow updates when adding or removing offer associations.
-
-## Planned next small commit
-
-Implement Django administrative settings/Telegram binding database models and migrations **or** first SQLAlchemy Keitaro models, after reviewing the first pushed commit and CI. We will choose one contained scope together.
+Текст задания Михаила доступен в [Notion](https://app.notion.com/p/mnovikov/Adrobot-2b01eb78a7bb80a1b188c3a4a1cad55e). Дополнительные команды управления Compose описаны в [infra/scripts/README.md](infra/scripts/README.md).

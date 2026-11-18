@@ -128,7 +128,7 @@ def test_timed_out_write_is_not_retried(tracker):
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("failure", [None, "second stream", "readback", "activation"])
+@pytest.mark.parametrize("failure", [None, "domain mismatch", "second stream", "readback", "activation"])
 def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
     open_client, requests = tracker
     references = {
@@ -173,7 +173,10 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
                 "alias": "demo-au", "name": "Demo", "group_id": "13", "domain_id": 12,
                 "traffic_source_id": 14, "type": "position", "state": "disabled",
             }
-            return httpx.Response(200, json=campaign)
+            return httpx.Response(200, json={key: value for key, value in campaign.items() if key != "domain_id"})
+        if path == "/campaigns/21":
+            assert request.method == "GET"
+            return httpx.Response(200, json={**campaign, "domain_id": 99 if failure == "domain mismatch" else 12})
         if path == "/streams":
             assert request.method == "POST"
             fields = json.loads(request.content)
@@ -200,13 +203,14 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
     request = CampaignCreationRequest(name="Demo", alias="demo-au", geo="au", offer_id=11,
                                       domain_id=12, group_id=13, traffic_source_id=14)
     client = open_client(handle)
-    expected_writes = ["/campaigns", "/streams", "/streams"]
+    expected_writes = ["/campaigns"] if failure == "domain mismatch" else ["/campaigns", "/streams", "/streams"]
     if failure is None:
         result = create_campaign(client, request)
         assert (result.campaign.id, result.geo_stream.id, result.offer_stream.id) == (21, 22, 23)
         assert result.campaign.raw["state"] == "active"
     else:
-        stages = {"second stream": "offer stream creation", "readback": "stream verification",
+        stages = {"domain mismatch": "campaign creation",
+                  "second stream": "offer stream creation", "readback": "stream verification",
                   "activation": "campaign activation"}
         with pytest.raises(CampaignCreationError) as exc:
             create_campaign(client, request)

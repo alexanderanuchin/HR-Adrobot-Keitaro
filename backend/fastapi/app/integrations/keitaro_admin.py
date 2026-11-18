@@ -135,7 +135,7 @@ def _record(payload: object, *, expected_id: int | None = None) -> KeitaroRecord
         raise KeitaroResponseError("Expected a JSON entity from Keitaro")
     entity_id = payload.get("id")
     name = payload.get("name")
-    if type(entity_id) is not int or entity_id <= 0 or not isinstance(name, str):
+    if type(entity_id) is not int or not 0 < entity_id <= 9_223_372_036_854_775_807 or not isinstance(name, str):
         raise KeitaroResponseError("Keitaro entity needs a positive integer ID and string name")
     if expected_id is not None and entity_id != expected_id:
         raise KeitaroResponseError("Keitaro returned the wrong entity")

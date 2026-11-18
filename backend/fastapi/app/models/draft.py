@@ -134,7 +134,7 @@ class StreamDraft(Base):
     # Django's accounts_user owns this identifier; avoid a cross-ORM FK.
     created_by_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     conflict_details: Mapped[dict[str, object] | None] = mapped_column(
-        JSONB, nullable=True
+        JSONB(none_as_null=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()

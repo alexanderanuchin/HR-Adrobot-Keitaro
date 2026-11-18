@@ -80,6 +80,7 @@ class StreamOffer(Base):
         nullable=False,
     )
     keitaro_offer_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    position_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     # A remote stream/offer association identifier may not be provided by KT.
     keitaro_relation_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
