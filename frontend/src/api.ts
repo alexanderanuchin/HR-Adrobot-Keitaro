@@ -33,6 +33,8 @@ export type Position = {
   keitaro_offer_id: number
   status: 'ACTIVE' | 'REMOVED'
   pinned_percent: number | null
+  pin_immediately: boolean
+  pending_pinned_percent: number | null
   calculated_percent: number
 }
 export type Draft = {

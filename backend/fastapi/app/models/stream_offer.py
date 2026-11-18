@@ -15,6 +15,7 @@ from uuid import UUID as PythonUUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -24,6 +25,7 @@ from sqlalchemy import (
     String,
     text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -67,6 +69,10 @@ class StreamOffer(Base):
             "pinned_percent IS NULL OR pinned_percent BETWEEN 0 AND 100",
             name="ck_kt_stream_offers_pinned_percent_range",
         ),
+        CheckConstraint(
+            "pending_pinned_percent IS NULL OR pending_pinned_percent BETWEEN 0 AND 100",
+            name="ck_kt_stream_offers_pending_pin_range",
+        ),
         Index("ix_kt_stream_offers_stream_status", "stream_id", "local_status"),
         Index("ix_kt_stream_offers_stream_offer", "stream_id", "keitaro_offer_id"),
     )
@@ -100,6 +106,8 @@ class StreamOffer(Base):
     )
     # PIN is local edit state; nothing here automatically writes to Keitaro.
     pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pin_immediately: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    pending_pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useId, useRef, useState } from 'react'
+import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import {
   type Campaign, type Draft, errorText, type Item, type Position, type Stream, workspace,
 } from './api'
@@ -21,16 +21,15 @@ type EditAction = 'remove' | 'bring_back' | 'pin'
 type DraftConfirmation = 'publish' | 'cancel'
 const fetchLabel = 'Загрузить потоки из Keitaro'
 
-function ConfirmDraftAction({ action, uncertain, onClose, onConfirm }: {
-  action: DraftConfirmation
-  uncertain: boolean
+function EditorDialog({ title, detail, onClose, children }: {
+  title: string
+  detail: string
   onClose: () => void
-  onConfirm: () => void
+  children: ReactNode
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   const descriptionId = useId()
-  const publishing = action === 'publish'
 
   useEffect(() => {
     const element = dialog.current
@@ -45,50 +44,95 @@ function ConfirmDraftAction({ action, uncertain, onClose, onConfirm }: {
         onClose()
       }}>
       <div className="form-stack">
-        <h2 id={titleId}>{publishing ? 'Опубликовать офферы?' : 'Отменить правки?'}</h2>
-        <p id={descriptionId}>
-          {publishing ? 'Состав офферов и их доли обновятся в этом потоке Keitaro.'
-            : uncertain ? 'Результат публикации ещё не подтверждён. Перед отменой проверьте список офферов в Keitaro.'
-              : 'Текущий черновик будет сброшен до данных последней сверки с Keitaro.'}
-        </p>
+        <h2 id={titleId}>{title}</h2>
+        <p id={descriptionId}>{detail}</p>
         <div className="panel-actions">
           <button type="button" className="button button--subtle" onClick={onClose} autoFocus>Назад</button>
-          <button type="button" className={`button ${publishing ? 'button--primary' : 'button--danger'}`}
-            onClick={onConfirm}>{publishing ? 'Опубликовать' : 'Сбросить черновик'}</button>
+          {children}
         </div>
       </div>
     </dialog>
   )
 }
 
+function ConfirmDraftAction({ action, uncertain, onClose, onConfirm }: {
+  action: DraftConfirmation
+  uncertain: boolean
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const publishing = action === 'publish'
+  return (
+    <EditorDialog title={publishing ? 'Опубликовать офферы?' : 'Отменить правки?'} onClose={onClose}
+      detail={publishing ? 'Состав офферов и их доли обновятся в этом потоке Keitaro.'
+        : uncertain ? 'Результат публикации ещё не подтверждён. Перед отменой проверьте список офферов в Keitaro.'
+          : 'Текущий черновик будет сброшен до данных последней сверки с Keitaro.'}>
+      <button type="button" className={`button ${publishing ? 'button--primary' : 'button--danger'}`}
+        onClick={onConfirm}>{publishing ? 'Опубликовать' : 'Сбросить черновик'}</button>
+    </EditorDialog>
+  )
+}
+
 function ShareControl({ position, disabled, save }: {
   position: Position
   disabled: boolean
-  save: (percent: number | null) => void
+  save: (percent: number | null, pinImmediately?: boolean) => void
 }) {
   const id = useId()
-  const [percent, setPercent] = useState(String(position.pinned_percent ?? position.calculated_percent))
+  const [percent, setPercent] = useState(String(
+    position.pending_pinned_percent ?? position.pinned_percent ?? position.calculated_percent,
+  ))
+  const [chooseMode, setChooseMode] = useState(false)
+  const unchangedImmediate = position.pending_pinned_percent === null && position.pin_immediately
+    && Number(percent) === position.pinned_percent
+
+  function pin(immediately: boolean) {
+    setChooseMode(false)
+    save(Number(percent), immediately)
+  }
   return (
-    <form className="pin-form" onSubmit={(event) => {
-      event.preventDefault()
-      save(Number(percent))
-    }}>
-      <div className="field pin-value">
-        <FieldHelp id={id} label="Доля, %" text="Введите целое число от 0 до 100 и нажмите «Закрепить долю»." />
-        <input id={id} type="number" min={0} max={100} step={1} required value={percent} disabled={disabled}
-          onChange={(event) => setPercent(event.target.value)} />
-      </div>
-      <HelpHint label="Закрепить долю" text="Оффер сохранит этот процент. Остальные офферы без фиксации поделят остаток."
-        control={<button className="button button--subtle" disabled={disabled || Number(percent) === position.pinned_percent}>
-          Закрепить долю
-        </button>} />
-      {position.pinned_percent !== null && (
-        <HelpHint label="Снять фиксацию" text="Доля оффера снова будет рассчитываться вместе с остальными."
-          control={<button type="button" className="button button--subtle" disabled={disabled} onClick={() => save(null)}>
-            Снять фиксацию
-          </button>} />
+    <>
+      <form className="pin-form" onSubmit={(event) => {
+        event.preventDefault()
+        setChooseMode(true)
+      }}>
+        <div className="field pin-value">
+          <FieldHelp id={id} label="Доля, %" text="Введите целое число от 0 до 100 и выберите режим фиксации." />
+          <input id={id} type="number" min={0} max={100} step={1} required value={percent} disabled={disabled}
+            onChange={(event) => setPercent(event.target.value)} />
+        </div>
+        <HelpHint label="Закрепить долю" text="Откроет выбор, применять долю сразу или при следующем изменении списка офферов."
+          control={<button className="button button--subtle" disabled={disabled}>Закрепить долю</button>} />
+        {(position.pinned_percent !== null || position.pending_pinned_percent !== null) && (
+          <HelpHint label="Снять фиксацию" text="Отменит закреплённые настройки и пересчитает доли автоматически."
+            control={<button type="button" className="button button--subtle" disabled={disabled} onClick={() => save(null)}>
+              Снять фиксацию
+            </button>} />
+        )}
+      </form>
+      {chooseMode && (
+        <EditorDialog title={`Как закрепить ${Number(percent)}%?`} onClose={() => setChooseMode(false)}
+          detail="«Сейчас» пересчитает доли сразу. «На будущее» применит процент, когда вы добавите, уберёте или вернёте другую строку оффера в черновике.">
+          <button type="button" className="button button--primary" disabled={unchangedImmediate}
+            onClick={() => pin(true)}>Закрепить сейчас</button>
+          <button type="button" className="button button--subtle" disabled={Number(percent) === position.pending_pinned_percent}
+            onClick={() => pin(false)}>Закрепить на будущее</button>
+        </EditorDialog>
       )}
-    </form>
+    </>
+  )
+}
+
+function OfferShare({ position, singleActiveOffer }: { position: Position; singleActiveOffer: boolean }) {
+  const pinAppliesWithOthers = singleActiveOffer && position.status === 'ACTIVE'
+    && !position.pin_immediately && position.pinned_percent !== 100
+  const futurePercent = position.pending_pinned_percent ?? (pinAppliesWithOthers ? position.pinned_percent : null)
+  return (
+    <td className="share">
+      {position.calculated_percent}%
+      {!pinAppliesWithOthers && position.pinned_percent !== null && <small>Закреплено {position.pinned_percent}%</small>}
+      {futurePercent !== null && <small>Закреплено на будущее {futurePercent}%</small>}
+    </td>
   )
 }
 
@@ -247,11 +291,11 @@ export default function StreamEditor({ campaignId, onCampaign }: {
     })
   }
 
-  async function edit(action: EditAction, positionId: string, percent: number | null = null) {
+  async function edit(action: EditAction, positionId: string, percent: number | null = null, pinImmediately = false) {
     if (!draft) return
     await run('Сохраняем черновик…', async () => {
       setDraft(await workspace<Draft>(`drafts/${draft.draft_id}/edit`, {
-        revision: draft.revision, action, position_id: positionId, pinned_percent: percent,
+        revision: draft.revision, action, position_id: positionId, pinned_percent: percent, pin_immediately: pinImmediately,
       }))
     })
   }
@@ -279,7 +323,8 @@ export default function StreamEditor({ campaignId, onCampaign }: {
   }
 
   const editable = Boolean(draft && ['SYNCED', 'DIRTY'].includes(draft.status))
-  const activeTotal = draft?.positions.reduce((sum, position) => sum + position.calculated_percent, 0)
+  const singleActiveOffer = draft?.positions.filter((position) => position.status === 'ACTIVE').length === 1
+  const activeTotal = draft?.positions.reduce((sum, position) => sum + position.calculated_percent, 0) ?? 0
   const draftNotice = draft?.reason === 'publication_rejected'
     ? `Keitaro отклонил публикацию (HTTP ${draft.upstream_status}). Черновик сохранён.`
     : draft?.status === 'CONFLICT'
@@ -381,9 +426,7 @@ export default function StreamEditor({ campaignId, onCampaign }: {
                         <strong>{names[position.keitaro_offer_id] || 'Оффер'}</strong>
                         <small>#{position.keitaro_offer_id}{position.status === 'REMOVED' && ' · архив'}</small>
                       </td>
-                      <td className="share">
-                        {position.calculated_percent}%{position.pinned_percent !== null && <small>Закреплено {position.pinned_percent}%</small>}
-                      </td>
+                      <OfferShare position={position} singleActiveOffer={singleActiveOffer} />
                       <td>
                         <div className="row-actions">
                           {position.status === 'REMOVED' ? (
@@ -393,8 +436,9 @@ export default function StreamEditor({ campaignId, onCampaign }: {
                                 onClick={() => edit('bring_back', position.position_id)}>Вернуть из архива</button>} />
                           ) : (
                             <>
-                              <ShareControl key={`${position.position_id}:${draft.revision}`} position={position} disabled={!editable || Boolean(busy)}
-                                save={(percent) => edit('pin', position.position_id, percent)} />
+                              <ShareControl key={`${position.position_id}:${draft.revision}`} position={position}
+                                disabled={!editable || Boolean(busy)}
+                                save={(percent, immediately) => edit('pin', position.position_id, percent, immediately)} />
                               <HelpHint label="Убрать из потока"
                                 text="Перенесёт позицию в архив с долей 0%. Вернуть её можно кнопкой «Вернуть из архива»."
                                 control={<button className="button button--danger" disabled={!editable || Boolean(busy)}
@@ -406,7 +450,12 @@ export default function StreamEditor({ campaignId, onCampaign }: {
                     </tr>
                   ))}
                 </tbody>
-                <tfoot><tr><th>Всего</th><td>{activeTotal}%</td><td /></tr></tfoot>
+                <tfoot>
+                  <tr><th>Всего</th><td>{activeTotal}%</td><td /></tr>
+                  {singleActiveOffer && activeTotal < 100 && (
+                    <tr><th>Остаток для новых офферов</th><td>{100 - activeTotal}%</td><td /></tr>
+                  )}
+                </tfoot>
               </table>
             </div>
           ) : <p className="muted">Офферов в потоке пока нет.</p>}

@@ -291,6 +291,159 @@ def test_publish_blocks_repeated_offer_ids_until_draft_is_corrected(api, tracker
     ]}
 
 
+@pytest.mark.parametrize("restore_disabled", [False, True], ids=["archived", "reactivated"])
+def test_publish_omits_redundant_disabled_associations(api, tracker, restore_disabled):
+    tracker.flows[52]["offers"].extend([
+        {"id": 90, "stream_id": 52, "offer_id": 13, "share": 5, "state": "disabled"},
+        {"id": 91, "stream_id": 52, "offer_id": 13, "share": 10, "state": "disabled"},
+        {"id": 92, "stream_id": 52, "offer_id": 14, "share": 0, "state": "disabled"},
+    ])
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    copies = [row for row in draft["positions"] if row["keitaro_offer_id"] == 13]
+    assert [row["status"] for row in copies] == ["REMOVED", "REMOVED"]
+    if restore_disabled:
+        draft = change(api, draft, "bring_back", copies[1])
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=70)
+
+    assert draft["publication_error"] is None
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert len(tracker.writes) == 1
+    assert json.loads(tracker.writes[0].content) == {"offers": [
+        {"offer_id": 11, "share": 70, "state": "active"},
+        {"offer_id": 12, "share": 15 if restore_disabled else 30, "state": "active"},
+        {"offer_id": 13, "share": 15, "state": "active"} if restore_disabled
+        else {"offer_id": 13, "share": 5, "state": "disabled"},
+        {"offer_id": 14, "share": 0, "state": "disabled"},
+    ]}
+    reopened = workspace(api, stream_id)
+    copies = [row for row in reopened["positions"] if row["keitaro_offer_id"] == 13]
+    assert [row["status"] for row in copies] == ["ACTIVE" if restore_disabled else "REMOVED", "REMOVED"]
+
+
+def test_deferred_pin_survives_publish_and_rebalances_when_the_offer_list_changes(api, tracker):
+    tracker.flows[52]["offers"] = [{**tracker.flows[52]["offers"][0], "share": 100}]
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=25, pin_immediately=False)
+    assert draft["status"] == "DIRTY"
+    assert draft["positions"][0]["calculated_percent"] == 100
+    assert draft["positions"][0]["pinned_percent"] is None
+    assert draft["positions"][0]["pending_pinned_percent"] == 25
+    assert workspace(api, stream_id) == draft
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert tracker.writes == []
+    assert tracker.flows[52]["offers"][0]["share"] == 100
+
+    tracker.flows[52]["filters"].append({"id": 56, "name": "language"})
+    fetch(api)
+    draft = workspace(api, stream_id)
+    assert draft["positions"][0]["pending_pinned_percent"] == 25
+    draft = add(api, draft, offer_id=12)
+    assert draft["positions"][0]["pending_pinned_percent"] is None
+    assert [(row["keitaro_offer_id"], row["calculated_percent"]) for row in draft["positions"]] == [(11, 25), (12, 75)]
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert [(row["offer_id"], row["share"]) for row in tracker.flows[52]["offers"]] == [(11, 25), (12, 75)]
+
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "remove", draft["positions"][1])
+    assert [row["calculated_percent"] for row in draft["positions"]] == [100, 0]
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert [(row["offer_id"], row["share"]) for row in tracker.flows[52]["offers"]] == [(11, 100)]
+
+    draft = workspace(api, stream_id)
+    assert draft["positions"][0]["pinned_percent"] == 25
+    draft = change(api, draft, "bring_back", draft["positions"][1])
+    assert [row["calculated_percent"] for row in draft["positions"]] == [25, 75]
+
+
+def test_immediate_pin_publishes_partial_share_and_survives_reopening(api, tracker):
+    tracker.flows[52]["offers"] = [{**tracker.flows[52]["offers"][0], "share": 100}]
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=25, pin_immediately=True)
+    assert draft["positions"][0]["pin_immediately"] is True
+    assert draft["positions"][0]["calculated_percent"] == 25
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert [row["share"] for row in tracker.flows[52]["offers"]] == [25]
+
+    fetch(api)
+    draft = workspace(api, stream_id)
+    assert draft["positions"][0]["calculated_percent"] == 25
+    assert draft["positions"][0]["pin_immediately"] is True
+    draft = add(api, draft, offer_id=12)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [25, 75]
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert [row["share"] for row in tracker.flows[52]["offers"]] == [25, 75]
+
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "remove", draft["positions"][1])
+    assert [row["calculated_percent"] for row in draft["positions"]] == [25, 0]
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert [row["share"] for row in tracker.flows[52]["offers"]] == [25]
+
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=35, pin_immediately=False)
+    assert draft["positions"][0]["pending_pinned_percent"] == 35
+    assert draft["positions"][0]["calculated_percent"] == 25
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert [row["share"] for row in tracker.flows[52]["offers"]] == [25]
+
+
+def test_future_pin_with_existing_offers_waits_for_a_membership_change(api, tracker):
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=25, pin_immediately=False)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [60, 40]
+    assert draft["positions"][0]["pending_pinned_percent"] == 25
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=None)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [60, 40]
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=25, pin_immediately=False)
+    assert publish(api, draft)["status"] == "PUBLISHED"
+    assert tracker.writes == []
+
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "pin", draft["positions"][1], pinned_percent=45, pin_immediately=True)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [55, 45]
+    assert draft["positions"][0]["pending_pinned_percent"] == 25
+    draft = add(api, draft, offer_id=13)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [25, 45, 30]
+    assert draft["positions"][0]["pending_pinned_percent"] is None
+
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=35, pin_immediately=False)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [25, 45, 30]
+    draft = change(api, draft, "remove", draft["positions"][1])
+    assert [row["calculated_percent"] for row in draft["positions"]] == [35, 0, 65]
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=20, pin_immediately=False)
+    draft = change(api, draft, "bring_back", draft["positions"][1])
+    assert [row["calculated_percent"] for row in draft["positions"]] == [20, 45, 35]
+
+
+def test_future_pin_rebalances_duplicate_draft_positions_but_cannot_publish_them(api, tracker):
+    tracker.flows[52]["offers"] = [{**tracker.flows[52]["offers"][0], "share": 100}]
+    stream_id = fetch(api)["streams"][1]["id"]
+    draft = workspace(api, stream_id)
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=100, pin_immediately=True)
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=12, pin_immediately=False)
+    assert draft["positions"][0]["calculated_percent"] == 100
+
+    draft = add(api, draft, offer_id=11)
+    draft = add(api, draft, offer_id=11)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [12, 44, 44]
+    assert draft["positions"][0]["pending_pinned_percent"] is None
+
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=20, pin_immediately=False)
+    assert [row["calculated_percent"] for row in draft["positions"]] == [12, 44, 44]
+    draft = change(api, draft, "remove", draft["positions"][2])
+    assert [row["calculated_percent"] for row in draft["positions"]] == [20, 80, 0]
+    draft = change(api, draft, "pin", draft["positions"][0], pinned_percent=12, pin_immediately=False)
+    draft = change(api, draft, "bring_back", draft["positions"][2])
+    assert [row["calculated_percent"] for row in draft["positions"]] == [12, 44, 44]
+    assert "#11" in draft["publication_error"]
+    assert publish(api, draft, expected=422)["detail"] == draft["publication_error"]
+    assert tracker.writes == []
+
+
 def test_external_offer_conflict_is_blocked_until_cancel(api, tracker):
     stream = fetch(api)["streams"][1]
     draft = add(api, workspace(api, stream["id"]))

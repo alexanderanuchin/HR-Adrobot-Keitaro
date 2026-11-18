@@ -48,6 +48,8 @@ class DraftOfferView:
     position_index: int
     status: str
     pinned_percent: int | None
+    pin_immediately: bool
+    pending_pinned_percent: int | None
     calculated_percent: int
 
 
@@ -92,6 +94,8 @@ def read_draft_workspace(session: Session, draft_id: UUID) -> DraftWorkspaceView
                 position_index=offer.position_index,
                 status=offer.status,
                 pinned_percent=offer.pinned_percent,
+                pin_immediately=offer.pin_immediately,
+                pending_pinned_percent=offer.pending_pinned_percent,
                 calculated_percent=offer.calculated_percent,
             )
             for offer in offers
@@ -111,7 +115,8 @@ def _validate_initial_positions(
     seen: set[UUID] = set()
     indices: set[int] = set()
     active_total = 0
-    active_count = 0
+    active_count = sum(row.local_status == DRAFT_OFFER_ACTIVE for row in source_rows)
+    expected_total = 100
     for position in initial_positions:
         if not isinstance(position.source_position_id, UUID):
             raise DraftWorkspaceError("source_position_id must be a UUID")
@@ -133,9 +138,11 @@ def _validate_initial_positions(
                 raise DraftWorkspaceError("removed initial position must display zero")
         else:
             active_total += position.calculated_percent
-            active_count += 1
-            if source.pinned_percent is not None and source.pinned_percent != position.calculated_percent:
-                raise DraftWorkspaceError("initial percent conflicts with the saved PIN")
+            if source.pinned_percent is not None:
+                if active_count == 1 and source.pin_immediately:
+                    expected_total = source.pinned_percent
+                if (active_count > 1 or source.pin_immediately) and source.pinned_percent != position.calculated_percent:
+                    raise DraftWorkspaceError("initial percent conflicts with the saved PIN")
         seen.add(position.source_position_id)
         indices.add(position.position_index)
 
@@ -143,8 +150,8 @@ def _validate_initial_positions(
         raise DraftWorkspaceError("initial positions must include every tracked offer, including archive")
     if indices != set(range(len(initial_positions))):
         raise DraftWorkspaceError("initial indices must be consecutive from zero")
-    if active_count and active_total != 100:
-        raise DraftWorkspaceError("active initial percentages must sum to 100")
+    if active_count and active_total != expected_total:
+        raise DraftWorkspaceError(f"active initial percentages must sum to {expected_total}")
     # For no active positions, all values have already been checked to be zero.
 
 
@@ -228,6 +235,8 @@ def open_or_create_draft_workspace(
             position_index=position.position_index,
             status=by_id[position.source_position_id].local_status,
             pinned_percent=by_id[position.source_position_id].pinned_percent,
+            pin_immediately=by_id[position.source_position_id].pin_immediately,
+            pending_pinned_percent=by_id[position.source_position_id].pending_pinned_percent,
             calculated_percent=position.calculated_percent,
         )
         for position in initial_positions

@@ -107,13 +107,23 @@ def _owned_detail(client: KeitaroAdminClient, stream: Stream, campaign_id: int) 
 
 def publication_assignments(session: Session, view: DraftWorkspaceView) -> list[dict]:
     source = {row.id: row for row in offer_positions(session, view.stream_id)}
+    active_offer_ids = {row.keitaro_offer_id for row in view.positions if row.status == DRAFT_OFFER_ACTIVE}
+    disabled_offer_ids: set[int] = set()
     assignments = []
     for row in view.positions:
         observed = source.get(row.source_position_id)
         if row.status == DRAFT_OFFER_ACTIVE:
             share, state = row.calculated_percent, "active"
-        elif observed is not None and observed.remote_state == "disabled" and observed.remote_share is not None:
+        elif (
+            row.keitaro_offer_id not in active_offer_ids
+            and row.keitaro_offer_id not in disabled_offer_ids
+            and observed is not None
+            and observed.remote_state == "disabled"
+            and observed.remote_share is not None
+        ):
+            # A disabled association can be kept only once, and an active position takes precedence.
             share, state = int(observed.remote_share), "disabled"
+            disabled_offer_ids.add(row.keitaro_offer_id)
         else:
             continue
         assignments.append({"position": str(row.position_id), "offer_id": row.keitaro_offer_id,
@@ -127,7 +137,7 @@ def duplicate_offer_message(assignments: list[dict]) -> str | None:
     if not duplicates:
         return None
     ids = ", ".join(f"#{offer_id}" for offer_id in duplicates)
-    return f"Офферы с ID {ids} повторяются. Перед публикацией оставьте в потоке одну строку для каждого ID."
+    return f"Офферы с ID {ids} повторяются. Перед публикацией оставьте одну активную строку для каждого ID."
 
 
 def _assignment(item: dict) -> StreamOfferAssignment:
@@ -156,6 +166,8 @@ def _confirm(session: Session, stream: Stream, draft: StreamDraft, record: Keita
             )
             session.add(row)
         row.pinned_percent = position.pinned_percent
+        row.pin_immediately = position.pin_immediately
+        row.pending_pinned_percent = position.pending_pinned_percent
         by_position[str(position.position_id)] = row
     session.flush()
     matched = defaultdict(deque)
