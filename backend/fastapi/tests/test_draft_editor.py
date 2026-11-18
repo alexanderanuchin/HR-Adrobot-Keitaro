@@ -354,14 +354,14 @@ def test_noneditable_draft_status_blocks_changes(db_session: Session, blocked_st
     assert db_session.get(StreamDraft, draft.id).revision == 0
 
 
-def test_cannot_remove_only_free_offer_when_another_active_pin_is_25(db_session: Session):
+def test_remove_other_offer_defers_the_remaining_offers_pin(db_session: Session):
     _stream_row, _sources, original = _workspace(db_session, (25, 75), pins=(25, None))
-    with pytest.raises(DraftEditError, match="all active positions are pinned"):
-        remove_offer_from_draft(
-            db_session, draft_id=original.draft_id, expected_revision=0,
-            position_id=original.positions[1].position_id,
-        )
-    assert read_draft_workspace(db_session, original.draft_id) == original
+    view = remove_offer_from_draft(
+        db_session, draft_id=original.draft_id, expected_revision=0,
+        position_id=original.positions[1].position_id,
+    )
+    assert _percents(view) == [100, 0]
+    assert view.positions[0].pinned_percent == 25
 
 
 def test_editor_can_add_to_dirty_draft_without_changing_base_snapshot(db_session: Session):

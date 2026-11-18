@@ -136,6 +136,8 @@ def _normalized_shares(positions: list[StreamOffer]) -> dict[UUID, int]:
     active = [row for row in positions if row.local_status == LOCAL_OFFER_ACTIVE]
     if not active:
         return {}
+    if len(active) == 1 and active[0].pin_immediately:
+        return {active[0].id: int(active[0].remote_share or 0)}
     shares = [int(row.remote_share or 0) for row in active]
     if not any(shares):
         shares = [1] * len(active)
@@ -213,10 +215,11 @@ def record_positions(
     rows = offer_positions(session, stream.id)
     shares = _normalized_shares(rows)
     for row in rows:
-        # An external edit can invalidate an old local PIN. Archived rows keep
-        # their PIN so BRING BACK can use it and run the normal weight check.
-        if row.id in shares and row.pinned_percent != shares[row.id]:
+        # Compare only pins that currently apply. Archived and deferred pins stay available.
+        if (row.id in shares and (len(shares) > 1 or row.pin_immediately)
+                and row.pinned_percent != shares[row.id]):
             row.pinned_percent = None
+            row.pin_immediately = False
 
 
 def capture(

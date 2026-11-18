@@ -69,6 +69,7 @@ class EditInput(RevisionInput):
     action: Literal["remove", "bring_back", "pin"]
     position_id: UUID
     pinned_percent: Annotated[int, Field(strict=True, ge=0, le=100)] | None = None
+    pin_immediately: Annotated[bool, Field(strict=True)] | None = None
 
 
 class CancelInput(RevisionInput):
@@ -198,7 +199,9 @@ def edit(draft_id: UUID, payload: EditInput, engine: Database) -> dict:
         elif payload.action == "bring_back":
             view = bring_back_offer_in_draft(session, **fields)
         else:
-            view = pin_offer_in_draft(session, **fields, pinned_percent=payload.pinned_percent)
+            view = pin_offer_in_draft(
+                session, **fields, pinned_percent=payload.pinned_percent, pin_immediately=payload.pin_immediately,
+            )
         return _draft_view(session, view)
 
 

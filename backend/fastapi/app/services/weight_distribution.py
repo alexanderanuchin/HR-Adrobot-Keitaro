@@ -1,9 +1,7 @@
 """Deterministic integer-percentage allocation for unpublished draft offers.
 
-A-04 rule: active draft positions share exactly 100 percentage points, while
-REMOVED positions receive zero. PIN values are kept exactly; any unpinned
-remainder is distributed in position_index order with earlier positions
-receiving the leftover single percentage points.
+With several active positions, pinned shares are kept and the remainder is
+split across unpinned positions in display order. Removed positions get zero.
 
 This is a PURE calculation: it never mutates input, SQLAlchemy entities, the
 PostgreSQL database, or Keitaro. Callers must persist results transactionally
@@ -32,6 +30,7 @@ class WeightPosition:
     position_index: int
     status: str = ACTIVE
     pinned_percent: int | None = None
+    pin_immediately: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +46,11 @@ def distribute_weights(positions: list[WeightPosition] | tuple[WeightPosition, .
 
     For N unpinned active positions, each receives ``remaining // N``.
     The first ``remaining % N`` positions (by position_index) receive one
-    additional percentage point. Pinned active positions retain their PIN.
+    additional percentage point. A sole active position gets 100%, unless
+    its pin is set to apply immediately and leave the remaining share open.
 
-    A completely empty/removed draft displays zero everywhere; whether an
-    offers-only stream with no active offers may be published is a separate
-    Keitaro adapter decision. If every active position is pinned, their PINs
-    must total exactly 100, since there is no position to absorb a remainder.
+    A draft without active positions displays zero everywhere. When two or
+    more active positions are all pinned, their pins must total exactly 100.
     """
     seen_ids: set[UUID] = set()
     seen_indices: set[int] = set()
@@ -83,6 +81,13 @@ def distribute_weights(positions: list[WeightPosition] | tuple[WeightPosition, .
 
     if not active:
         return tuple(WeightResult(position.position_id, 0) for position in ordered)
+    if len(active) == 1:
+        sole = active[0]
+        share = sole.pinned_percent if sole.pin_immediately and sole.pinned_percent is not None else 100
+        return tuple(
+            WeightResult(position.position_id, share if position.status == ACTIVE else 0)
+            for position in ordered
+        )
 
     pinned_total = sum(position.pinned_percent or 0 for position in active)
     if pinned_total > 100:

@@ -12,12 +12,14 @@ from uuid import UUID as PythonUUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKeyConstraint,
     Index,
     Integer,
     String,
     UniqueConstraint,
+    false,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -63,6 +65,10 @@ class DraftOffer(Base):
             name="ck_kt_draft_offers_pinned_range",
         ),
         CheckConstraint(
+            "pending_pinned_percent IS NULL OR pending_pinned_percent BETWEEN 0 AND 100",
+            name="ck_kt_draft_offers_pending_pin_range",
+        ),
+        CheckConstraint(
             "calculated_percent BETWEEN 0 AND 100",
             name="ck_kt_draft_offers_calculated_range",
         ),
@@ -91,6 +97,8 @@ class DraftOffer(Base):
         server_default=text("'ACTIVE'"),
     )
     pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pin_immediately: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    pending_pinned_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     calculated_percent: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )

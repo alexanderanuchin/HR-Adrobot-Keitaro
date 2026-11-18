@@ -12,6 +12,7 @@ revision compare-and-swap protect against competing editor requests.
 
 from __future__ import annotations
 
+from typing import NamedTuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -43,6 +44,12 @@ class DraftEditNotFound(LookupError):
 
 class DraftRevisionConflict(DraftEditError):
     """The editor's revision is stale; reload the workspace before retrying."""
+
+
+class OfferPin(NamedTuple):
+    percent: int | None
+    immediately: bool
+    pending_percent: int | None
 
 
 class DraftEditBlocked(DraftEditError):
@@ -98,15 +105,27 @@ def _draft_positions(session: Session, draft_id: UUID) -> list[DraftOffer]:
     )
 
 
+def _activate_pending_pins(rows: list[DraftOffer], changed_position_id: UUID) -> dict[UUID, OfferPin]:
+    # Duplicate Keitaro IDs may still represent different positions in a draft.
+    return {
+        row.id: OfferPin(row.pending_pinned_percent, False, None)
+        for row in rows
+        if (row.id != changed_position_id and row.status == DRAFT_OFFER_ACTIVE
+            and row.pending_pinned_percent is not None)
+    }
+
+
 def _calculate(
     rows: list[DraftOffer], *,
+    pins: dict[UUID, OfferPin],
     removed_id: UUID | None = None,
     restored_id: UUID | None = None,
-    pin_override: tuple[UUID, int | None] | None = None,
 ) -> dict[UUID, int]:
     """Validate a hypothetical edit before changing any persistent position."""
-    proposal = [
-        WeightPosition(
+    proposal = []
+    for row in rows:
+        pin = pins.get(row.id)
+        proposal.append(WeightPosition(
             position_id=row.id,
             position_index=row.position_index,
             status=(
@@ -114,14 +133,9 @@ def _calculate(
                 else DRAFT_OFFER_ACTIVE if row.id == restored_id
                 else row.status
             ),
-            pinned_percent=(
-                pin_override[1]
-                if pin_override is not None and row.id == pin_override[0]
-                else row.pinned_percent
-            ),
-        )
-        for row in rows
-    ]
+            pinned_percent=pin.percent if pin is not None else row.pinned_percent,
+            pin_immediately=pin.immediately if pin is not None else row.pin_immediately,
+        ))
     try:
         weights = distribute_weights(proposal)
     except WeightDistributionError as exc:
@@ -139,7 +153,7 @@ def _save_edit(
     added: DraftOffer | None = None,
     removed_id: UUID | None = None,
     restored_id: UUID | None = None,
-    pin_override: tuple[UUID, int | None] | None = None,
+    pins: dict[UUID, OfferPin],
 ) -> DraftWorkspaceView:
     # Database compare-and-swap is a second line of defence in addition to
     # SELECT FOR UPDATE; no stale caller can silently overwrite newer edits.
@@ -165,8 +179,8 @@ def _save_edit(
             row.status = DRAFT_OFFER_REMOVED
         elif row.id == restored_id:
             row.status = DRAFT_OFFER_ACTIVE
-        if pin_override is not None and row.id == pin_override[0]:
-            row.pinned_percent = pin_override[1]
+        if row.id in pins:
+            row.pinned_percent, row.pin_immediately, row.pending_pinned_percent = pins[row.id]
         row.calculated_percent = calculated[row.id]
     session.flush()
     session.refresh(draft)  # Read the DB value after compare-and-swap, not a stale ORM cache.
@@ -206,16 +220,19 @@ def add_offer_to_draft(
         position_index=next_index,
         status=DRAFT_OFFER_ACTIVE,
         pinned_percent=None,
+        pin_immediately=False,
         calculated_percent=0,
     )
     rows.append(added)
-    calculated = _calculate(rows)
+    pins = _activate_pending_pins(rows, added.id)
+    calculated = _calculate(rows, pins=pins)
     return _save_edit(
         session,
         draft=draft,
         expected_revision=expected_revision,
         rows=rows,
         calculated=calculated,
+        pins=pins,
         added=added,
     )
 
@@ -246,13 +263,15 @@ def remove_offer_from_draft(
     if row.status != DRAFT_OFFER_ACTIVE:
         raise DraftEditBlocked("offer position is not active")
 
-    calculated = _calculate(rows, removed_id=position_id)
+    pins = _activate_pending_pins(rows, position_id)
+    calculated = _calculate(rows, pins=pins, removed_id=position_id)
     return _save_edit(
         session,
         draft=draft,
         expected_revision=expected_revision,
         rows=rows,
         calculated=calculated,
+        pins=pins,
         removed_id=position_id,
     )
 
@@ -283,13 +302,15 @@ def bring_back_offer_in_draft(
     if row.status != DRAFT_OFFER_REMOVED:
         raise DraftEditBlocked("offer position is not removed")
 
-    calculated = _calculate(rows, restored_id=position_id)
+    pins = _activate_pending_pins(rows, position_id)
+    calculated = _calculate(rows, pins=pins, restored_id=position_id)
     return _save_edit(
         session,
         draft=draft,
         expected_revision=expected_revision,
         rows=rows,
         calculated=calculated,
+        pins=pins,
         restored_id=position_id,
     )
 
@@ -301,6 +322,7 @@ def pin_offer_in_draft(
     expected_revision: int,
     position_id: UUID,
     pinned_percent: int | None,
+    pin_immediately: bool | None = None,
 ) -> DraftWorkspaceView:
     """PIN to an integer 0..100, or UNPIN with None, on an ACTIVE position.
 
@@ -314,6 +336,8 @@ def pin_offer_in_draft(
         type(pinned_percent) is not int or not 0 <= pinned_percent <= 100
     ):
         raise DraftEditError("pinned_percent must be an integer from 0 to 100 or None")
+    if pin_immediately is not None and type(pin_immediately) is not bool:
+        raise DraftEditError("pin_immediately must be a boolean or None")
 
     draft = _locked_draft(session, draft_id, expected_revision)
     rows = _draft_positions(session, draft.id)
@@ -322,16 +346,25 @@ def pin_offer_in_draft(
         raise DraftEditNotFound("offer position not found in this draft")
     if row.status != DRAFT_OFFER_ACTIVE:
         raise DraftEditBlocked("only active offer positions can be pinned")
-    if row.pinned_percent == pinned_percent:
+    current_pin = OfferPin(row.pinned_percent, row.pin_immediately, row.pending_pinned_percent)
+    defer = pinned_percent is not None and pin_immediately is False
+    if defer:
+        new_pin = OfferPin(current_pin.percent, current_pin.immediately, pinned_percent)
+    else:
+        new_pin = OfferPin(pinned_percent, pin_immediately is True and pinned_percent is not None, None)
+    if new_pin == current_pin:
         raise DraftEditError("offer position already has the requested PIN")
 
-    override = (position_id, pinned_percent)
-    calculated = _calculate(rows, pin_override=override)
+    pins = {position_id: new_pin}
+    if (new_pin.percent, new_pin.immediately) == (current_pin.percent, current_pin.immediately):
+        calculated = {item.id: item.calculated_percent for item in rows}
+    else:
+        calculated = _calculate(rows, pins=pins)
     return _save_edit(
         session,
         draft=draft,
         expected_revision=expected_revision,
         rows=rows,
         calculated=calculated,
-        pin_override=override,
+        pins=pins,
     )

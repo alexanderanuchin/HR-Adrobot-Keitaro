@@ -165,7 +165,11 @@ def test_distinct_streams_can_have_unfinished_drafts(db_session: Session, persis
         _draft(other_stream, second_base, status=DRAFT_DIRTY),
     ])
     db_session.flush()
-    assert len(db_session.scalars(select(StreamDraft).where(StreamDraft.status == DRAFT_DIRTY)).all()) == 2
+    dirty_streams = db_session.scalars(select(StreamDraft.stream_id).where(
+        StreamDraft.status == DRAFT_DIRTY,
+        StreamDraft.stream_id.in_((persisted_stream.id, other_stream.id)),
+    )).all()
+    assert set(dirty_streams) == {persisted_stream.id, other_stream.id}
 
 
 def test_latest_snapshot_and_conflict_details_are_preserved(

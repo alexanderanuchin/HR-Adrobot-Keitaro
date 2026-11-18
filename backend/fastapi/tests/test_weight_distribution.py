@@ -1,4 +1,4 @@
-"""Pure A-04 allocation tests; no database, network, or Keitaro access."""
+"""Pure offer allocation tests; no database, network, or Keitaro access."""
 
 from dataclasses import FrozenInstanceError
 from random import Random
@@ -112,9 +112,16 @@ def test_fully_pinned_without_100_is_rejected():
         percentages(position(0, pin=25), position(1, pin=25))
 
 
-def test_single_partial_pin_without_free_positions_is_rejected():
-    with pytest.raises(WeightDistributionError, match="not 100"):
-        percentages(position(0, pin=99))
+@pytest.mark.parametrize("pin", [0, 25, 99])
+def test_single_active_offer_keeps_full_share_with_a_future_pin(pin):
+    assert percentages(position(0, status=REMOVED), position(1, pin=pin)) == [0, 100]
+
+
+@pytest.mark.parametrize("pin", [0, 25, 100])
+def test_single_active_offer_uses_an_immediate_pin(pin):
+    active = WeightPosition(UUID(int=2), 1, pinned_percent=pin, pin_immediately=True)
+    assert percentages(position(0, status=REMOVED), active) == [0, pin]
+    assert percentages(position(0, status=REMOVED), active, position(2)) == [0, pin, 100 - pin]
 
 
 def test_duplicate_position_identity_is_rejected():
