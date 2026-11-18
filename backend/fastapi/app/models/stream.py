@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -39,6 +40,7 @@ class Stream(Base):
             name="uq_kt_streams_keitaro_stream_id",
         ),
         Index("ix_kt_streams_campaign_id", "campaign_id"),
+        Index("ix_kt_streams_last_edited", "last_edited_at", "id", postgresql_where=text("last_edited_at IS NOT NULL")),
     )
 
     id: Mapped[PythonUUID] = mapped_column(
@@ -56,6 +58,7 @@ class Stream(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     campaign: Mapped[Campaign] = relationship(back_populates="streams")
     snapshots: Mapped[list[StreamSnapshot]] = relationship(

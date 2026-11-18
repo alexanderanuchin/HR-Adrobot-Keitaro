@@ -4,17 +4,7 @@ import {
 } from './api'
 import HelpHint, { FieldHelp } from './HelpHint'
 import OfferPicker from './OfferPicker'
-
-const labels: Record<string, string> = {
-  SYNCED: 'Синхронизирован',
-  DIRTY: 'Есть изменения',
-  CONFLICT: 'Конфликт',
-  PUBLISHING: 'Публикация',
-  VERIFYING: 'Сверка',
-  UNCERTAIN: 'Нужна сверка',
-  FAILED: 'Ошибка',
-  PUBLISHED: 'Опубликован',
-}
+import { streamStatusLabels } from './streamStatus'
 
 type CampaignPage = { items: Item[]; next_offset: number | null }
 type EditAction = 'remove' | 'delete' | 'bring_back' | 'pin'
@@ -137,9 +127,11 @@ function OfferShare({ position, singleActiveOffer }: { position: Position; singl
   )
 }
 
-export default function StreamEditor({ campaignId, onCampaign }: {
+export default function StreamEditor({ campaignId, streamId, onCampaign, onStream }: {
   campaignId: number | null
+  streamId: number | null
   onCampaign: (id: number | null) => void
+  onStream: (id: number) => void
 }) {
   const [campaigns, setCampaigns] = useState<Item[]>([])
   const [nextOffset, setNextOffset] = useState<number | null>(0)
@@ -183,6 +175,8 @@ export default function StreamEditor({ campaignId, onCampaign }: {
     setSelected(null)
     setDraft(null)
     setOffer(null)
+    setError('')
+    setNotice('')
     if (campaignId === null) {
       setBusy('')
       return
@@ -190,7 +184,22 @@ export default function StreamEditor({ campaignId, onCampaign }: {
     const controller = new AbortController()
     setBusy('Читаем сохранённые потоки…')
     workspace<Campaign>(`campaigns/${campaignId}`, undefined, controller.signal)
-      .then(setCampaign)
+      .then(async (result) => {
+        if (controller.signal.aborted) return
+        setCampaign(result)
+        if (streamId === null) return
+        const stream = result.streams.find((item) => item.keitaro_id === streamId)
+        if (!stream || (!stream.editable && !stream.draft_status)) {
+          setError('Поток недоступен для редактирования. Выберите другой поток или загрузите список из Keitaro.')
+          return
+        }
+        setBusy('Открываем черновик…')
+        const view = await workspace<Draft>(`streams/${stream.id}/workspace`, {}, controller.signal)
+        if (!controller.signal.aborted) {
+          setSelected(stream)
+          setDraft(view)
+        }
+      })
       .catch((requestError: unknown) => {
         if (!controller.signal.aborted) setError(errorText(requestError))
       })
@@ -198,7 +207,7 @@ export default function StreamEditor({ campaignId, onCampaign }: {
         if (!controller.signal.aborted) setBusy('')
       })
     return () => controller.abort()
-  }, [campaignId])
+  }, [campaignId, streamId])
 
   const offerIds = [...new Set(draft?.positions.map((position) => position.keitaro_offer_id))].sort((a, b) => a - b)
   const lookup = offerIds.slice(0, 90).join(',')
@@ -399,7 +408,8 @@ export default function StreamEditor({ campaignId, onCampaign }: {
                     <span>#{stream.keitaro_id} · {stream.schema}{!stream.present && ' · отсутствует в Keitaro'}</span></div>
                   {stream.editable || stream.draft_status ? (
                     <HelpHint label="Черновик потока" text="Откроет сохранённый черновик выбранного потока или создаст новый из загруженных офферов."
-                      control={<button className="button button--subtle" disabled={Boolean(busy)} onClick={() => openStream(stream)}>
+                      control={<button className="button button--subtle" disabled={Boolean(busy)}
+                        onClick={() => stream.keitaro_id === streamId ? openStream(stream) : onStream(stream.keitaro_id)}>
                         {selected?.id === stream.id ? 'Обновить черновик' : 'Открыть офферы'}
                       </button>} />
                   ) : <span className="muted">Только просмотр</span>}
@@ -415,7 +425,7 @@ export default function StreamEditor({ campaignId, onCampaign }: {
             <h2>{selected?.name || 'Черновик офферов'}</h2>
             <HelpHint label="Состояние черновика"
               text={draftHelp}
-              control={<span className={`status status--${draft.status.toLowerCase()}`}>{labels[draft.status] || draft.status}</span>} />
+              control={<span className={`status status--${draft.status.toLowerCase()}`}>{streamStatusLabels[draft.status] || draft.status}</span>} />
           </div>
           {draftNotice && <p className="notice notice--warning" role="status">{draftNotice}</p>}
           {draft.publication_error && <p className="notice notice--warning" role="status">{draft.publication_error}</p>}

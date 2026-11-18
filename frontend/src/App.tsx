@@ -3,8 +3,12 @@ import { errorText, session, signOut } from './api'
 import CampaignCreator from './CampaignCreator'
 import HelpHint, { FieldHelp } from './HelpHint'
 import StreamEditor from './StreamEditor'
+import StreamHistory from './StreamHistory'
 
-type Section = 'create' | 'editor'
+type Section = 'create' | 'editor' | 'history'
+const sectionTitles: Record<Section, string> = {
+  create: 'Кампании', editor: 'Кампании / Потоки', history: 'Кампании / История потоков',
+}
 
 function Brand() {
   return (
@@ -59,8 +63,8 @@ function Login({ onLogin }: { onLogin: (username: string) => void }) {
   )
 }
 
-function initialCampaign(): number | null {
-  const value = Number(new URLSearchParams(location.search).get('campaign'))
+function initialId(name: 'campaign' | 'stream'): number | null {
+  const value = Number(new URLSearchParams(location.search).get(name))
   return Number.isSafeInteger(value) && value > 0 ? value : null
 }
 
@@ -69,10 +73,17 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
   const [signingOut, setSigningOut] = useState(false)
-  const [campaignId, setCampaignId] = useState(initialCampaign)
-  const [section, setSection] = useState<Section>(() => (
-    new URLSearchParams(location.search).get('section') === 'editor' ? 'editor' : 'create'
-  ))
+  const [campaignId, setCampaignId] = useState(() => initialId('campaign'))
+  const [streamId, setStreamId] = useState(() => initialId('stream'))
+  const [section, setSection] = useState<Section>(() => {
+    const value = new URLSearchParams(location.search).get('section')
+    return value === 'editor' || value === 'history' ? value : 'create'
+  })
+
+  function selectCampaign(id: number | null) {
+    setCampaignId(id)
+    setStreamId(null)
+  }
 
   function loadSession() {
     setReady(false)
@@ -89,8 +100,10 @@ export default function App() {
     url.searchParams.set('section', section)
     if (campaignId === null) url.searchParams.delete('campaign')
     else url.searchParams.set('campaign', String(campaignId))
+    if (campaignId === null || streamId === null) url.searchParams.delete('stream')
+    else url.searchParams.set('stream', String(streamId))
     history.replaceState(null, '', url)
-  }, [section, campaignId])
+  }, [section, campaignId, streamId])
 
   async function logout() {
     setSigningOut(true)
@@ -126,11 +139,13 @@ export default function App() {
             onClick={() => setSection('create')}>Создать кампанию</button>
           <button aria-current={section === 'editor' ? 'page' : undefined}
             onClick={() => setSection('editor')}>Редактор потоков</button>
+          <button aria-current={section === 'history' ? 'page' : undefined}
+            onClick={() => setSection('history')}>История потоков</button>
         </nav>
       </aside>
       <main className="content">
         <header className="topbar">
-          <span>{section === 'create' ? 'Кампании' : 'Кампании / Потоки'}</span>
+          <span>{sectionTitles[section]}</span>
           <div><span>{username}</span>
             <HelpHint label="Выйти" text="Закроет вашу сессию. Сохранённые черновики можно открыть после следующего входа."
               control={<button className="button button--subtle" disabled={signingOut} onClick={logout}>Выйти</button>} />
@@ -140,10 +155,15 @@ export default function App() {
           {error && <p className="notice notice--error" role="alert">{error}</p>}
           {section === 'create' ? (
             <CampaignCreator username={username} openEditor={(id) => {
-              setCampaignId(id)
+              selectCampaign(id)
               setSection('editor')
             }} />
-          ) : <StreamEditor campaignId={campaignId} onCampaign={setCampaignId} />}
+          ) : section === 'history' ? <StreamHistory onOpen={(campaign, stream) => {
+            setCampaignId(campaign)
+            setStreamId(stream)
+            setSection('editor')
+          }} /> : <StreamEditor campaignId={campaignId} streamId={streamId}
+            onCampaign={selectCampaign} onStream={setStreamId} />}
         </div>
       </main>
     </div>

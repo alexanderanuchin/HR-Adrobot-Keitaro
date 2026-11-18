@@ -28,6 +28,18 @@ export type Stream = {
   draft_status: string | null
 }
 export type Campaign = { id: number; name: string | null; streams: Stream[] }
+export type StreamHistoryPage = {
+  items: {
+    campaign_id: number
+    campaign_name: string
+    stream_id: number
+    stream_name: string
+    edited_at: string
+    status: string | null
+    can_open: boolean
+  }[]
+  next_offset: number | null
+}
 export type Position = {
   position_id: string
   keitaro_offer_id: number

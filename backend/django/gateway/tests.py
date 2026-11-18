@@ -53,3 +53,13 @@ class WorkspaceGatewayTests(TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json(), {"detail": "Invalid request fields"})
         self.assertEqual(upstream.call_args.kwargs["params"], {"q": ["example offer"]})
+
+    def test_stream_history_is_available_to_staff(self):
+        route = "/api/v1/workspace/streams/history/"
+        self.assertEqual(self.client.get(route).status_code, 403)
+        self.client.force_login(self.staff)
+        page = {"items": [], "next_offset": None}
+        with patch("gateway.views.httpx.request", return_value=httpx.Response(200, json=page)) as upstream:
+            self.assertEqual(self.client.get(route, {"offset": 50}).json(), page)
+        self.assertEqual(upstream.call_args.args, ("GET", "http://fastapi:8000/internal/v1/workspace/streams/history"))
+        self.assertEqual(upstream.call_args.kwargs["params"], {"offset": ["50"]})

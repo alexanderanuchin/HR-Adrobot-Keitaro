@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.db.workspace import get_workspace_engine
 from app.integrations.keitaro_admin import KeitaroAdminClient, KeitaroRecord
-from app.models import Campaign, Stream, StreamDraft
-from app.models.draft import DRAFT_DIRTY, TERMINAL_DRAFT_STATUSES
+from app.models import Campaign, Stream, StreamDraft, StreamSnapshot
+from app.models.draft import DRAFT_CANCELLED, DRAFT_DIRTY, TERMINAL_DRAFT_STATUSES
 from app.services.campaign_preflight import CampaignCreationRequest
 from app.services.draft_editor import (
     add_offer_to_draft, bring_back_offer_in_draft, pin_offer_in_draft, remove_offer_from_draft,
@@ -172,6 +172,34 @@ def campaign_workspace(campaign_id: RemoteID, engine: Database) -> dict:
 def fetch_campaign(campaign_id: RemoteID, client: Tracker, engine: Database) -> dict:
     sync_campaign(engine, client, campaign_id)
     return campaign_workspace(campaign_id, engine)
+
+
+@router.get("/streams/history")
+def stream_history(engine: Database, offset: Annotated[int, Query(ge=0, le=MAX_REMOTE_ID)] = 0) -> dict:
+    page_size = 50
+    snapshot_id = select(StreamSnapshot.id).where(StreamSnapshot.stream_id == Stream.id).order_by(
+        StreamSnapshot.captured_at.desc(), StreamSnapshot.id.desc(),
+    ).limit(1).correlate(Stream).scalar_subquery()
+    draft_status = select(StreamDraft.status).where(
+        StreamDraft.stream_id == Stream.id, StreamDraft.status != DRAFT_CANCELLED,
+    ).order_by(StreamDraft.created_at.desc(), StreamDraft.id.desc()).limit(1).scalar_subquery()
+    with Session(engine) as session:
+        rows = session.execute(
+            select(Stream, Campaign.keitaro_campaign_id, Campaign.name, StreamSnapshot, draft_status)
+            .select_from(Stream).join(Campaign, Campaign.id == Stream.campaign_id)
+            .outerjoin(StreamSnapshot, StreamSnapshot.id == snapshot_id)
+            .where(Stream.last_edited_at.is_not(None))
+            .order_by(Stream.last_edited_at.desc(), Stream.id.desc()).offset(offset).limit(page_size + 1)
+        ).all()
+        return {
+            "items": [{
+                "campaign_id": campaign_id, "campaign_name": campaign_name,
+                "stream_id": stream.keitaro_stream_id, "stream_name": stream.name,
+                "edited_at": stream.last_edited_at, "status": status,
+                "can_open": is_editable(snapshot) or (status is not None and status not in TERMINAL_DRAFT_STATUSES),
+            } for stream, campaign_id, campaign_name, snapshot, status in rows[:page_size]],
+            "next_offset": offset + page_size if len(rows) > page_size else None,
+        }
 
 
 @router.post("/streams/{stream_id}/workspace")
