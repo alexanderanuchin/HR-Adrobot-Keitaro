@@ -131,6 +131,13 @@ thead { color: var(--muted); }
 td small { display: block; margin-top: 3px; }
 .share { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .row--archived { background: #151a26; color: var(--muted); }
+.row--archived .offer-actions { position: relative; padding-right: 3rem; }
+.archive-remove {
+  position: absolute; top: 6px; right: 7px; width: 32px; height: 32px; padding: 0;
+  display: grid; place-items: center; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: #ffd1d4; font-size: 1.35rem; line-height: 1;
+}
+.archive-remove:hover:not(:disabled) { background: #3d2830; border-color: #78494d; }
 .row-actions, .pin-form { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .pin-form { align-items: end; }
 .pin-value label { white-space: nowrap; }

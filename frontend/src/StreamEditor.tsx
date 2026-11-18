@@ -88,17 +88,15 @@ function ShareControl({ position, disabled, save }: {
         setChooseMode(true)
       }}>
         <div className="field pin-value">
-          <FieldHelp id={id} label="Доля, %" text="Введите целое число от 0 до 100 и выберите режим фиксации." />
+          <label htmlFor={id}>Доля, %</label>
           <input id={id} type="number" min={0} max={100} step={1} required value={percent} disabled={disabled}
             onChange={(event) => setPercent(event.target.value)} />
         </div>
-        <HelpHint label="Закрепить долю" text="Откроет выбор, применять долю сразу или при следующем изменении списка офферов."
-          control={<button className="button button--subtle" disabled={disabled}>Закрепить долю</button>} />
+        <button type="submit" className="button button--subtle" disabled={disabled}>Закрепить долю</button>
         {(position.pinned_percent !== null || position.pending_pinned_percent !== null) && (
-          <HelpHint label="Снять фиксацию" text="Отменит закреплённые настройки и пересчитает доли автоматически."
-            control={<button type="button" className="button button--subtle" disabled={disabled} onClick={() => save(null)}>
-              Снять фиксацию
-            </button>} />
+          <button type="button" className="button button--subtle" disabled={disabled} onClick={() => save(null)}>
+            Снять фиксацию
+          </button>
         )}
       </form>
       {chooseMode && (
@@ -441,28 +439,23 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
                         <small>#{position.keitaro_offer_id}{position.status === 'REMOVED' && ' · архив'}</small>
                       </td>
                       <OfferShare position={position} singleActiveOffer={singleActiveOffer} />
-                      <td>
+                      <td className="offer-actions">
                         <div className="row-actions">
                           {position.status === 'REMOVED' ? (
                             <>
-                              <HelpHint label="Вернуть из архива"
-                                text="Вернёт оффер в черновик потока и пересчитает доли. Если доля была закреплена, фиксация восстановится."
-                                control={<button className="button button--subtle" disabled={!editable || Boolean(busy)}
-                                  onClick={() => edit('bring_back', position.position_id)}>Вернуть из архива</button>} />
-                              <HelpHint label="Удалить из архива"
-                                text="Удалит эту строку из архива потока после подтверждения и публикации. Доли активных офферов сохранятся."
-                                control={<button className="button button--danger" disabled={!editable || Boolean(busy)}
-                                  onClick={() => setOfferRemoval({ position, confirmDeletion: true })}>Удалить</button>} />
+                              <button type="button" className="button button--subtle" disabled={!editable || Boolean(busy)}
+                                onClick={() => edit('bring_back', position.position_id)}>Вернуть из архива</button>
+                              <button type="button" className="archive-remove" aria-label="Удалить из архива"
+                                disabled={!editable || Boolean(busy)}
+                                onClick={() => setOfferRemoval({ position, confirmDeletion: true })}>×</button>
                             </>
                           ) : (
                             <>
                               <ShareControl key={`${position.position_id}:${draft.revision}`} position={position}
                                 disabled={!editable || Boolean(busy)}
                                 save={(percent, immediately) => edit('pin', position.position_id, percent, immediately)} />
-                              <HelpHint label="Убрать из потока"
-                                text="Откроет выбор: перенести строку в архив или удалить её из потока и архива."
-                                control={<button className="button button--danger" disabled={!editable || Boolean(busy)}
-                                  onClick={() => setOfferRemoval({ position, confirmDeletion: false })}>Убрать из потока</button>} />
+                              <button type="button" className="button button--danger" disabled={!editable || Boolean(busy)}
+                                onClick={() => setOfferRemoval({ position, confirmDeletion: false })}>Убрать из потока</button>
                             </>
                           )}
                         </div>
@@ -481,11 +474,9 @@ export default function StreamEditor({ campaignId, streamId, onCampaign, onStrea
           ) : <p className="muted">Офферов в потоке пока нет.</p>}
           {editable && (
             <div className="add-offer">
-              <OfferPicker value={offer} onPick={setOffer} disabled={Boolean(busy)} allowBrowsing
-                help="Введите название или ID либо нажмите «Показать все офферы». Выберите нужный оффер и нажмите «Добавить оффер»." />
-              <HelpHint label="Добавить оффер" text="Добавит выбранный оффер в черновик и пересчитает доли."
-                control={<button className="button button--subtle" disabled={Boolean(busy) || !offer}
-                  onClick={addOffer}>Добавить оффер</button>} />
+              <OfferPicker value={offer} onPick={setOffer} disabled={Boolean(busy)} allowBrowsing />
+              <button type="button" className="button button--subtle" disabled={Boolean(busy) || !offer}
+                onClick={addOffer}>Добавить оффер</button>
             </div>
           )}
           <div className="panel-actions">

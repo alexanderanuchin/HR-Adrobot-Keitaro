@@ -10,7 +10,7 @@ export default function OfferPicker({
   value: Item | null
   onPick: (offer: Item | null) => void
   disabled?: boolean
-  help: string
+  help?: string
   allowBrowsing?: boolean
 }) {
   const id = useId()
@@ -56,22 +56,26 @@ export default function OfferPicker({
     }
   }, [normalized, offset, showResults, value])
 
+  const replaceButton = (
+    <button type="button" className="button button--subtle" disabled={disabled} onClick={() => {
+      setQuery('')
+      resetResults()
+      onPick(null)
+    }}>Заменить</button>
+  )
+
   return (
     <div className="offer-picker">
       {value ? (
         <div className="selected-offer">
           <span><strong>{value.name}</strong> <small>#{value.id}</small></span>
-          <HelpHint label="Заменить оффер" text="Откроет поиск, чтобы вы могли выбрать другой оффер."
-            control={<button type="button" className="button button--subtle" disabled={disabled} onClick={() => {
-              setQuery('')
-              resetResults()
-              onPick(null)
-            }}>Заменить</button>} />
+          {help ? <HelpHint label="Заменить оффер" text="Откроет поиск, чтобы вы могли выбрать другой оффер."
+            control={replaceButton} /> : replaceButton}
         </div>
       ) : (
         <>
           <div className="field">
-            <FieldHelp id={id} label="Поиск оффера" text={help} />
+            {help ? <FieldHelp id={id} label="Поиск оффера" text={help} /> : <label htmlFor={id}>Поиск оффера</label>}
             <input id={id} type="search" value={query} maxLength={255} placeholder="Название или ID Keitaro" disabled={disabled}
               onChange={(event) => {
                 const next = event.target.value
@@ -82,11 +86,10 @@ export default function OfferPicker({
               }} />
           </div>
           {allowBrowsing && !query && (
-            <HelpHint label="Список офферов" text="Показывает активные офферы, доступные текущему ключу Keitaro."
-              control={<button type="button" className="button button--subtle" disabled={disabled} onClick={() => {
-                setBrowse(!browse)
-                resetResults(!browse)
-              }}>{browse ? 'Скрыть список офферов' : 'Показать все офферы'}</button>} />
+            <button type="button" className="button button--subtle" disabled={disabled} onClick={() => {
+              setBrowse(!browse)
+              resetResults(!browse)
+            }}>{browse ? 'Скрыть список офферов' : 'Показать все офферы'}</button>
           )}
           {showResults && (
             <div className="offer-results" aria-live="polite">
