@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { errorText, session, signOut } from './api'
 import CampaignCreator from './CampaignCreator'
+import HelpHint, { FieldHelp } from './HelpHint'
 import StreamEditor from './StreamEditor'
 
 type Section = 'create' | 'editor'
@@ -42,14 +43,17 @@ function Login({ onLogin }: { onLogin: (username: string) => void }) {
       <form className="panel form-stack" onSubmit={submit}>
         <Brand />
         <h1>Вход в рабочее пространство</h1>
-        <label className="field"><span>Имя пользователя</span>
-          <input name="username" autoComplete="username" required disabled={busy} />
-        </label>
-        <label className="field"><span>Пароль</span>
-          <input name="password" type="password" autoComplete="current-password" required disabled={busy} />
-        </label>
+        <div className="field">
+          <FieldHelp id="login-username" label="Имя пользователя" text="Введите имя своей учётной записи Adrobot." />
+          <input id="login-username" name="username" autoComplete="username" required disabled={busy} />
+        </div>
+        <div className="field">
+          <FieldHelp id="login-password" label="Пароль" text="Введите пароль той же учётной записи Adrobot." />
+          <input id="login-password" name="password" type="password" autoComplete="current-password" required disabled={busy} />
+        </div>
         {error && <p className="notice notice--error" role="alert">{error}</p>}
-        <button className="button button--primary" disabled={busy}>{busy ? 'Входим…' : 'Войти'}</button>
+        <HelpHint label="Войти" text="После входа откроются создание кампаний и редактор потоков."
+          control={<button className="button button--primary" disabled={busy}>{busy ? 'Входим…' : 'Войти'}</button>} />
       </form>
     </main>
   )
@@ -106,7 +110,8 @@ export default function App() {
     <main className="entry">
       <div className="panel form-stack">
         <p className="notice notice--error" role="alert">{error}</p>
-        <button className="button button--subtle" onClick={loadSession}>Повторить</button>
+        <HelpHint label="Повторить" text="Заново проверит, открыта ли ваша сессия."
+          control={<button className="button button--subtle" onClick={loadSession}>Повторить</button>} />
       </div>
     </main>
   )
@@ -127,7 +132,8 @@ export default function App() {
         <header className="topbar">
           <span>{section === 'create' ? 'Кампании' : 'Кампании / Потоки'}</span>
           <div><span>{username}</span>
-            <button className="button button--subtle" disabled={signingOut} onClick={logout}>Выйти</button>
+            <HelpHint label="Выйти" text="Закроет вашу сессию. Сохранённые черновики можно открыть после следующего входа."
+              control={<button className="button button--subtle" disabled={signingOut} onClick={logout}>Выйти</button>} />
           </div>
         </header>
         <div className="page">

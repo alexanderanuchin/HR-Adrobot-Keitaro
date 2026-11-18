@@ -28,7 +28,7 @@ from app.services.draft_workspace import (
 )
 from app.services.stream_sync import (
     capture, initial_positions, latest_snapshot, observed_offers, offer_positions,
-    record_campaign, remote_id, routing_fingerprint, same_offers,
+    record_campaign, remote_id, routing_fingerprint, routing_matches, same_offers,
 )
 
 RECOVERABLE_STATES = frozenset({DRAFT_PUBLISHING, DRAFT_VERIFYING, DRAFT_UNCERTAIN})
@@ -129,7 +129,7 @@ def _assignment(item: dict) -> StreamOfferAssignment:
 def _matches(record: KeitaroRecord | None, intent: dict) -> bool:
     return (
         record is not None
-        and routing_fingerprint(record) == intent["routing"]
+        and routing_matches(record, intent["routing"])
         and Counter(item.assignment for item in observed_offers(record))
         == Counter(_assignment(item) for item in intent["assignments"])
     )

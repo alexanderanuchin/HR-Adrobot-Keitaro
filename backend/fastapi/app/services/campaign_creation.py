@@ -134,7 +134,9 @@ def execute_campaign_creation(
             "collect_clicks": True,
             "schema": "redirect",
             "action_type": "http",
-            "action_options": {"url": geo.redirect_url},
+            # The tracker stores action_options separately and reads the
+            # destination of an HTTP redirect from action_payload.
+            "action_payload": geo.redirect_url,
             "filters": [{"name": "country", "mode": "accept", "payload": [geo.country_code]}],
         })
         stage = "offer stream creation"
@@ -158,8 +160,6 @@ def execute_campaign_creation(
 
         stage = "campaign activation"
         campaign = client.enable_campaign(campaign_id)
-        if "domain_id" not in campaign.raw:
-            campaign = client.get_campaign(campaign_id)
         verify_campaign_settings(campaign, plan, state="active")
     except KeitaroError as exc:
         raise CampaignCreationError(stage, campaign_id, exc) from exc

@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { errorText, type Item, workspace } from './api'
+import HelpHint, { FieldHelp } from './HelpHint'
 
 export default function OfferPicker({
-  value, onPick, disabled, required,
+  value, onPick, disabled, help,
 }: {
   value: Item | null
   onPick: (offer: Item | null) => void
   disabled?: boolean
-  required?: boolean
+  help: string
 }) {
+  const id = useId()
   const [query, setQuery] = useState('')
   const [matches, setMatches] = useState<Item[]>([])
   const [searching, setSearching] = useState(false)
@@ -40,24 +42,25 @@ export default function OfferPicker({
       {value ? (
         <div className="selected-offer">
           <span><strong>{value.name}</strong> <small>#{value.id}</small></span>
-          <button type="button" className="button button--subtle" disabled={disabled} onClick={() => {
-            setQuery('')
-            setMatches([])
-            onPick(null)
-          }}>Заменить</button>
+          <HelpHint label="Заменить оффер" text="Откроет поиск, чтобы вы могли выбрать другой оффер."
+            control={<button type="button" className="button button--subtle" disabled={disabled} onClick={() => {
+              setQuery('')
+              setMatches([])
+              onPick(null)
+            }}>Заменить</button>} />
         </div>
       ) : (
         <>
-          <label className="field">
-            <span>Поиск оффера {required && <span aria-hidden="true">*</span>}</span>
-            <input type="search" value={query} maxLength={255} placeholder="Название или ID Keitaro" disabled={disabled}
+          <div className="field">
+            <FieldHelp id={id} label="Поиск оффера" text={help} />
+            <input id={id} type="search" value={query} maxLength={255} placeholder="Название или ID Keitaro" disabled={disabled}
               onChange={(event) => {
                 setMatches([])
                 setError('')
                 setSearching(Boolean(event.target.value.trim()))
                 setQuery(event.target.value)
               }} />
-          </label>
+          </div>
           {query.trim() && (
             <div className="offer-results" aria-live="polite">
               {error ? <p className="muted">{error}</p> : searching ? (

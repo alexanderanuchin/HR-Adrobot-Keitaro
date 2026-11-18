@@ -207,6 +207,20 @@ class KeitaroAdminReadClient:
         params: dict[str, int | str] | None = None,
         body: dict[str, Any] | None = None,
     ) -> object:
+        response = self._send(method, resource, params=params, body=body)
+        try:
+            return response.json()
+        except ValueError:
+            raise KeitaroResponseError("Keitaro Admin API returned invalid JSON") from None
+
+    def _send(
+        self,
+        method: str,
+        resource: str,
+        *,
+        params: dict[str, int | str] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> httpx.Response:
         # Resource is a fixed internal literal or a validated positive integer.
         url = f"{self._origin}/admin_api/v1/{resource}"
         try:
@@ -241,10 +255,7 @@ class KeitaroAdminReadClient:
             else:
                 exception_type = KeitaroHTTPError
             raise exception_type(response.status_code)
-        try:
-            return response.json()
-        except (ValueError, UnicodeDecodeError):
-            raise KeitaroResponseError("Keitaro Admin API returned invalid JSON") from None
+        return response
 
     def list_campaigns(self, *, offset: int = 0, limit: int | None = None) -> tuple[KeitaroRecord, ...]:
         if type(offset) is not int or offset < 0:
@@ -334,7 +345,9 @@ class KeitaroAdminClient(KeitaroAdminReadClient):
 
     def enable_campaign(self, campaign_id: int) -> KeitaroRecord:
         cid = _positive_id(campaign_id, "campaign_id")
-        return _record(self._request_json("POST", f"campaigns/{cid}/enable"), expected_id=cid)
+        # The tracker can acknowledge activation without returning a campaign.
+        self._send("POST", f"campaigns/{cid}/enable")
+        return self.get_campaign(cid)
 
     def replace_stream_offers(
         self, stream_id: int, offers: Sequence[StreamOfferAssignment],

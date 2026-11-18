@@ -1,7 +1,8 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useId, useRef, useState } from 'react'
 import {
   type Campaign, type Draft, errorText, type Item, type Position, type Stream, workspace,
 } from './api'
+import HelpHint, { FieldHelp } from './HelpHint'
 import OfferPicker from './OfferPicker'
 
 const labels: Record<string, string> = {
@@ -17,24 +18,75 @@ const labels: Record<string, string> = {
 
 type CampaignPage = { items: Item[]; next_offset: number | null }
 type EditAction = 'remove' | 'bring_back' | 'pin'
+type DraftConfirmation = 'publish' | 'cancel'
+const fetchLabel = 'Загрузить потоки из Keitaro'
 
-function PIN({ position, disabled, save }: {
+function ConfirmDraftAction({ action, uncertain, onClose, onConfirm }: {
+  action: DraftConfirmation
+  uncertain: boolean
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const titleId = useId()
+  const descriptionId = useId()
+  const publishing = action === 'publish'
+
+  useEffect(() => {
+    const element = dialog.current
+    element?.showModal()
+    return () => element?.close()
+  }, [])
+
+  return (
+    <dialog ref={dialog} className="confirm-dialog" aria-labelledby={titleId} aria-describedby={descriptionId}
+      onCancel={(event) => {
+        event.preventDefault()
+        onClose()
+      }}>
+      <div className="form-stack">
+        <h2 id={titleId}>{publishing ? 'Опубликовать офферы?' : 'Отменить правки?'}</h2>
+        <p id={descriptionId}>
+          {publishing ? 'Состав офферов и их доли обновятся в этом потоке Keitaro.'
+            : uncertain ? 'Результат публикации ещё не подтверждён. Перед отменой проверьте список офферов в Keitaro.'
+              : 'Текущий черновик будет сброшен до данных последней сверки с Keitaro.'}
+        </p>
+        <div className="panel-actions">
+          <button type="button" className="button button--subtle" onClick={onClose} autoFocus>Назад</button>
+          <button type="button" className={`button ${publishing ? 'button--primary' : 'button--danger'}`}
+            onClick={onConfirm}>{publishing ? 'Опубликовать' : 'Сбросить черновик'}</button>
+        </div>
+      </div>
+    </dialog>
+  )
+}
+
+function ShareControl({ position, disabled, save }: {
   position: Position
   disabled: boolean
   save: (percent: number | null) => void
 }) {
+  const id = useId()
   const [percent, setPercent] = useState(String(position.pinned_percent ?? position.calculated_percent))
   return (
     <form className="pin-form" onSubmit={(event) => {
       event.preventDefault()
       save(Number(percent))
     }}>
-      <input type="number" min={0} max={100} step={1} required value={percent} disabled={disabled}
-        aria-label={`Фиксированная доля оффера #${position.keitaro_offer_id}`}
-        onChange={(event) => setPercent(event.target.value)} />
-      <button className="button button--subtle" disabled={disabled || Number(percent) === position.pinned_percent}>PIN</button>
+      <div className="field pin-value">
+        <FieldHelp id={id} label="Доля, %" text="Введите целое число от 0 до 100 и нажмите «Закрепить долю»." />
+        <input id={id} type="number" min={0} max={100} step={1} required value={percent} disabled={disabled}
+          onChange={(event) => setPercent(event.target.value)} />
+      </div>
+      <HelpHint label="Закрепить долю" text="Оффер сохранит этот процент. Остальные офферы без фиксации поделят остаток."
+        control={<button className="button button--subtle" disabled={disabled || Number(percent) === position.pinned_percent}>
+          Закрепить долю
+        </button>} />
       {position.pinned_percent !== null && (
-        <button type="button" className="button button--subtle" disabled={disabled} onClick={() => save(null)}>UNPIN</button>
+        <HelpHint label="Снять фиксацию" text="Доля оффера снова будет рассчитываться вместе с остальными."
+          control={<button type="button" className="button button--subtle" disabled={disabled} onClick={() => save(null)}>
+            Снять фиксацию
+          </button>} />
       )}
     </form>
   )
@@ -56,6 +108,7 @@ export default function StreamEditor({ campaignId, onCampaign }: {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [confirmation, setConfirmation] = useState<DraftConfirmation | null>(null)
 
   function addCampaigns(items: Item[]) {
     setCampaigns((previous) => Array.from(new Map([...previous, ...items].map((item) => [item.id, item])).values()))
@@ -204,7 +257,7 @@ export default function StreamEditor({ campaignId, onCampaign }: {
   }
 
   async function publish() {
-    if (!draft || !window.confirm('Опубликовать текущий список офферов в этом потоке Keitaro?')) return
+    if (!draft) return
     await run('Записываем и проверяем публикацию…', async () => {
       const view = await workspace<Draft>(`drafts/${draft.draft_id}/publish`, { revision: draft.revision })
       setDraft(view)
@@ -215,10 +268,6 @@ export default function StreamEditor({ campaignId, onCampaign }: {
   async function cancel() {
     if (!draft) return
     const uncertain = draft.status === 'UNCERTAIN'
-    const prompt = uncertain
-      ? 'Отменить локальный черновик с неопределённым результатом PUSH? Перед этим проверьте поток в Keitaro. Удалённые данные изменены не будут.'
-      : 'Отменить неопубликованные изменения и вернуться к данным последней сверки?'
-    if (!window.confirm(prompt)) return
     await run('Отменяем локальные изменения…', async () => {
       const result = await workspace<{ draft: Draft | null }>(`drafts/${draft.draft_id}/cancel`, {
         revision: draft.revision, confirm_uncertain: uncertain,
@@ -236,20 +285,21 @@ export default function StreamEditor({ campaignId, onCampaign }: {
     : draft?.status === 'CONFLICT'
       ? 'Состав офферов изменился в Keitaro. Черновик сохранён. Сверьте поток или отмените локальные изменения, чтобы открыть актуальный список.'
       : draft && ['UNCERTAIN', 'PUBLISHING', 'VERIFYING'].includes(draft.status)
-        ? 'Результат предыдущей записи требует сверки. Выполните FETCH STREAMS FROM KT.'
+        ? `Результат публикации требует сверки. Нажмите «${fetchLabel}».`
         : ''
 
   return (
     <>
       <header className="page-heading">
         <h1>Редактор потоков</h1>
-        <p>Изменения сохраняются в черновике. PUSH отправляет состав и доли офферов в Keitaro.</p>
+        <p>Загрузите потоки, измените офферы в черновике и опубликуйте их в Keitaro.</p>
       </header>
       <section className="panel form-stack">
         <div className="editor-controls">
-          <label className="field">
-            <span>Кампания</span>
-            <select value={campaignId ?? ''} disabled={Boolean(busy)}
+          <div className="field">
+            <FieldHelp id="editor-campaign" label="Кампания"
+              text="В списке кампании из Keitaro и те, что уже сохранены локально. Выберите нужную и загрузите её потоки." />
+            <select id="editor-campaign" value={campaignId ?? ''} disabled={Boolean(busy)}
               onChange={(event) => selectCampaign(event.target.value ? Number(event.target.value) : null)}>
               <option value="">Выберите кампанию</option>
               {campaignId !== null && !campaigns.some((item) => item.id === campaignId) && (
@@ -257,24 +307,27 @@ export default function StreamEditor({ campaignId, onCampaign }: {
               )}
               {campaigns.map((item) => <option key={item.id} value={item.id}>{item.name} · #{item.id}</option>)}
             </select>
-          </label>
+          </div>
           <form className="inline-form" onSubmit={enterId}>
-            <label className="field">
-              <span>Или откройте по ID</span>
-              <input value={manualId} onChange={(event) => setManualId(event.target.value)} inputMode="numeric"
+            <div className="field">
+              <FieldHelp id="editor-campaign-id" label="Или откройте по ID"
+                text="Если кампании пока нет в списке, введите её номер из Keitaro и нажмите «Открыть»." />
+              <input id="editor-campaign-id" value={manualId} onChange={(event) => setManualId(event.target.value)} inputMode="numeric"
                 pattern="[0-9]+" placeholder="ID кампании" required disabled={Boolean(busy)} />
-            </label>
+            </div>
             <button className="button button--subtle" disabled={Boolean(busy)}>Открыть</button>
           </form>
         </div>
         <div className="panel-actions">
-          <button className="button button--primary" onClick={fetchStreams} disabled={Boolean(busy) || campaignId === null}>
-            FETCH STREAMS FROM KT
-          </button>
+          <HelpHint label={fetchLabel} text="Прочитает потоки и офферы в Keitaro. Если черновик уже есть, он сохранится."
+            control={<button className="button button--primary" onClick={fetchStreams} disabled={Boolean(busy) || campaignId === null}>
+              {fetchLabel}
+            </button>} />
           {nextOffset !== null && (
-            <button className="button button--subtle" onClick={moreCampaigns} disabled={Boolean(busy)}>
-              {nextOffset === 0 ? 'Загрузить кампании Keitaro' : 'Ещё кампании'}
-            </button>
+            <HelpHint label="Загрузить список кампаний" text="Добавит в список следующую страницу кампаний из Keitaro."
+              control={<button className="button button--subtle" onClick={moreCampaigns} disabled={Boolean(busy)}>
+                {nextOffset === 0 ? 'Загрузить кампании Keitaro' : 'Ещё кампании'}
+              </button>} />
           )}
         </div>
         {catalogError && <p className="muted">{catalogError}</p>}
@@ -294,21 +347,24 @@ export default function StreamEditor({ campaignId, onCampaign }: {
                   <div><strong>{stream.name || `Поток #${stream.keitaro_id}`}</strong>
                     <span>#{stream.keitaro_id} · {stream.schema}{!stream.present && ' · отсутствует в Keitaro'}</span></div>
                   {stream.editable || stream.draft_status ? (
-                    <button className="button button--subtle" disabled={Boolean(busy)} onClick={() => openStream(stream)}>
-                      {selected?.id === stream.id ? 'Обновить черновик' : 'Открыть офферы'}
-                    </button>
+                    <HelpHint label="Черновик потока" text="Откроет сохранённый черновик выбранного потока или создаст новый из загруженных офферов."
+                      control={<button className="button button--subtle" disabled={Boolean(busy)} onClick={() => openStream(stream)}>
+                        {selected?.id === stream.id ? 'Обновить черновик' : 'Открыть офферы'}
+                      </button>} />
                   ) : <span className="muted">Только просмотр</span>}
                 </li>
               ))}
             </ul>
-          ) : <p className="muted">Сохранённых потоков пока нет. Выполните FETCH STREAMS FROM KT.</p>}
+          ) : <p className="muted">Потоки ещё не загружены. Нажмите «{fetchLabel}».</p>}
         </section>
       )}
       {draft && (
         <section className="panel form-stack draft" aria-label="Черновик офферов">
           <div className="panel-heading">
             <h2>{selected?.name || 'Черновик офферов'}</h2>
-            <span className={`status status--${draft.status.toLowerCase()}`}>{labels[draft.status] || draft.status}</span>
+            <HelpHint label="Состояние черновика"
+              text="«Есть изменения» означает, что правки сохранены в черновике. Чтобы применить их, нажмите «Опубликовать в Keitaro»."
+              control={<span className={`status status--${draft.status.toLowerCase()}`}>{labels[draft.status] || draft.status}</span>} />
           </div>
           {draftNotice && <p className="notice notice--warning" role="status">{draftNotice}</p>}
           {draft.positions.length ? (
@@ -323,19 +379,23 @@ export default function StreamEditor({ campaignId, onCampaign }: {
                         <small>#{position.keitaro_offer_id}{position.status === 'REMOVED' && ' · архив'}</small>
                       </td>
                       <td className="share">
-                        {position.calculated_percent}%{position.pinned_percent !== null && <small>PIN {position.pinned_percent}%</small>}
+                        {position.calculated_percent}%{position.pinned_percent !== null && <small>Закреплено {position.pinned_percent}%</small>}
                       </td>
                       <td>
                         <div className="row-actions">
                           {position.status === 'REMOVED' ? (
-                            <button className="button button--subtle" disabled={!editable || Boolean(busy)}
-                              onClick={() => edit('bring_back', position.position_id)}>BRING BACK</button>
+                            <HelpHint label="Вернуть из архива"
+                              text="Вернёт оффер в черновик потока и пересчитает доли. Если доля была закреплена, фиксация восстановится."
+                              control={<button className="button button--subtle" disabled={!editable || Boolean(busy)}
+                                onClick={() => edit('bring_back', position.position_id)}>Вернуть из архива</button>} />
                           ) : (
                             <>
-                              <PIN key={`${position.position_id}:${draft.revision}`} position={position} disabled={!editable || Boolean(busy)}
+                              <ShareControl key={`${position.position_id}:${draft.revision}`} position={position} disabled={!editable || Boolean(busy)}
                                 save={(percent) => edit('pin', position.position_id, percent)} />
-                              <button className="button button--danger" disabled={!editable || Boolean(busy)}
-                                onClick={() => edit('remove', position.position_id)}>REMOVE</button>
+                              <HelpHint label="Убрать из потока"
+                                text="Перенесёт позицию в архив с долей 0%. Вернуть её можно кнопкой «Вернуть из архива»."
+                                control={<button className="button button--danger" disabled={!editable || Boolean(busy)}
+                                  onClick={() => edit('remove', position.position_id)}>Убрать из потока</button>} />
                             </>
                           )}
                         </div>
@@ -349,26 +409,40 @@ export default function StreamEditor({ campaignId, onCampaign }: {
           ) : <p className="muted">Офферов в потоке пока нет.</p>}
           {editable && (
             <div className="add-offer">
-              <OfferPicker value={offer} onPick={setOffer} disabled={Boolean(busy)} />
-              <button className="button button--subtle" disabled={Boolean(busy) || !offer} onClick={addOffer}>ADD</button>
+              <OfferPicker value={offer} onPick={setOffer} disabled={Boolean(busy)}
+                help="Найдите активный оффер Keitaro по названию или ID. Затем выберите его и нажмите «Добавить оффер»." />
+              <HelpHint label="Добавить оффер" text="Добавит выбранный оффер в черновик и пересчитает доли."
+                control={<button className="button button--subtle" disabled={Boolean(busy) || !offer}
+                  onClick={addOffer}>Добавить оффер</button>} />
             </div>
           )}
           <div className="panel-actions">
             {draft.status === 'PUBLISHED' ? (
-              <button className="button button--subtle" disabled={Boolean(busy) || !selected}
-                onClick={() => selected && openStream(selected)}>Открыть текущие офферы</button>
+              <HelpHint label="Открыть текущие офферы" text="Откроет новый черновик на основе только что опубликованных офферов."
+                control={<button className="button button--subtle" disabled={Boolean(busy) || !selected}
+                  onClick={() => selected && openStream(selected)}>Открыть текущие офферы</button>} />
             ) : (
               <>
-                <button className="button button--primary" disabled={Boolean(busy) || draft.status !== 'DIRTY'}
-                  onClick={publish}>PUSH TO KT</button>
-                <button className="button button--subtle"
-                  disabled={Boolean(busy) || ['SYNCED', 'PUBLISHING', 'VERIFYING'].includes(draft.status) ||
-                    (draft.status === 'UNCERTAIN' && !draft.reconciliation_checked)}
-                  onClick={cancel}>CANCEL</button>
+                <HelpHint label="Опубликовать в Keitaro"
+                  text="Проверит актуальный поток и после подтверждения запишет состав офферов и их доли в Keitaro."
+                  control={<button className="button button--primary" disabled={Boolean(busy) || draft.status !== 'DIRTY'}
+                    onClick={() => setConfirmation('publish')}>Опубликовать в Keitaro</button>} />
+                <HelpHint label="Отменить правки" text="Сбросит неопубликованные правки и откроет данные последней сверки с Keitaro."
+                  control={<button className="button button--subtle"
+                    disabled={Boolean(busy) || ['SYNCED', 'PUBLISHING', 'VERIFYING'].includes(draft.status) ||
+                      (draft.status === 'UNCERTAIN' && !draft.reconciliation_checked)}
+                    onClick={() => setConfirmation('cancel')}>Отменить правки</button>} />
               </>
             )}
           </div>
         </section>
+      )}
+      {draft && confirmation && (
+        <ConfirmDraftAction action={confirmation} uncertain={draft.status === 'UNCERTAIN'}
+          onClose={() => setConfirmation(null)} onConfirm={() => {
+            setConfirmation(null)
+            void (confirmation === 'publish' ? publish() : cancel())
+          }} />
       )}
     </>
   )

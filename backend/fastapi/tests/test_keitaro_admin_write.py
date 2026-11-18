@@ -144,7 +144,7 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
     geo_fields = {
         "campaign_id": 21, "name": "GEO redirect", "type": "regular", "position": 1,
         "state": "active", "collect_clicks": True, "schema": "redirect", "action_type": "http",
-        "action_options": {"url": "https://www.google.com/"},
+        "action_payload": "https://www.google.com/",
         "filters": [{"name": "country", "mode": "accept", "payload": ["AU"]}],
     }
     offer_fields = {
@@ -159,8 +159,10 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
         "filters": [{"id": 31, "stream_id": 22, "name": "country", "mode": "accept", "payload": '["AU"]'}],
     }
     offer_flow = {**offer_fields, "id": 23, "offers": [{**offer_fields["offers"][0], "id": 32, "stream_id": 23}]}
+    activated = False
 
     def handle(request):
+        nonlocal activated
         path = request.url.path.removeprefix("/admin_api/v1")
         if path in references:
             assert request.method == "GET"
@@ -176,7 +178,10 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
             return httpx.Response(200, json={key: value for key, value in campaign.items() if key != "domain_id"})
         if path == "/campaigns/21":
             assert request.method == "GET"
-            return httpx.Response(200, json={**campaign, "domain_id": 99 if failure == "domain mismatch" else 12})
+            return httpx.Response(200, json={
+                **campaign, "domain_id": 99 if failure == "domain mismatch" else 12,
+                "state": "active" if activated else "disabled",
+            })
         if path == "/streams":
             assert request.method == "POST"
             fields = json.loads(request.content)
@@ -190,14 +195,17 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
         if path == "/campaigns/21/streams":
             assert request.method == "GET"
             if failure == "readback":
-                return httpx.Response(200, json=[{**geo_flow, "action_payload": ""}, offer_flow])
+                return httpx.Response(200, json=[{
+                    **geo_flow, "action_payload": None, "action_options": {"url": "https://www.google.com/"},
+                }, offer_flow])
             return httpx.Response(200, json=[offer_flow, geo_flow])
         if path == "/campaigns/21/enable":
             assert request.method == "POST"
             assert not request.content
             if failure == "activation":
                 raise httpx.ReadTimeout("private failure", request=request)
-            return httpx.Response(200, json={**campaign, "state": "active"})
+            activated = True
+            return httpx.Response(200)
         pytest.fail(f"Unexpected path {path}")
 
     request = CampaignCreationRequest(name="Demo", alias="demo-au", geo="au", offer_id=11,
@@ -219,5 +227,7 @@ def test_create_campaign_verifies_two_flows_before_activation(tracker, failure):
         assert "private failure" not in str(exc.value)
     if failure in (None, "activation"):
         expected_writes.append("/campaigns/21/enable")
-        assert requests[-2].url.path == "/admin_api/v1/campaigns/21/streams"
+        assert requests[-3 if failure is None else -2].url.path == "/admin_api/v1/campaigns/21/streams"
+        if failure is None:
+            assert (requests[-1].method, requests[-1].url.path) == ("GET", "/admin_api/v1/campaigns/21")
     assert [r.url.path.removeprefix("/admin_api/v1") for r in requests if r.method != "GET"] == expected_writes

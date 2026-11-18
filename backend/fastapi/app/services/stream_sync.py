@@ -3,6 +3,7 @@
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import product
 from uuid import UUID
 
 from sqlalchemy import select
@@ -22,6 +23,7 @@ from app.services.draft_workspace import InitialOfferPosition
 
 OFFER_SCHEMAS = {"landings", "offers"}
 MAX_REMOTE_ID = 2**63 - 1
+NULLABLE_ROUTING_TEXT = ("action_payload", "comments")
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,14 +54,35 @@ def observed_offers(record: KeitaroRecord) -> list[ObservedOffer]:
     return observations
 
 
-def routing_fingerprint(record: KeitaroRecord) -> str:
-    """Compare settings that an offers-only update must preserve."""
+def _routing_fields(record: KeitaroRecord) -> dict[str, object]:
     keys = (
         "campaign_id", "name", "position", "weight", "type", "schema", "state",
         "action_type", "action_payload", "action_options", "landings", "filters",
         "filter_or", "collect_clicks", "triggers", "offer_selection", "comments",
     )
-    return snapshot_fingerprint({key: record.raw[key] for key in keys if key in record.raw})
+    return {key: record.raw[key] for key in keys if key in record.raw}
+
+
+def routing_fingerprint(record: KeitaroRecord) -> str:
+    """Compare routing values, treating empty comments and destinations consistently."""
+    fields = _routing_fields(record)
+    for key in NULLABLE_ROUTING_TEXT:
+        if fields.get(key) == "":
+            fields[key] = None
+    return snapshot_fingerprint(fields)
+
+
+def routing_matches(record: KeitaroRecord, fingerprint: str) -> bool:
+    if routing_fingerprint(record) == fingerprint:
+        return True
+    # A publication already in progress can carry a pre-normalization hash.
+    # Compare alternate encodings for these specific empty text fields only.
+    fields = _routing_fields(record)
+    empty = [key for key in NULLABLE_ROUTING_TEXT if key in fields and fields[key] in (None, "")]
+    return any(
+        snapshot_fingerprint({**fields, **dict(zip(empty, values, strict=True))}) == fingerprint
+        for values in product((None, ""), repeat=len(empty))
+    )
 
 
 def stream_payload(record: KeitaroRecord | None) -> tuple[dict[str, object], list[ObservedOffer]]:
